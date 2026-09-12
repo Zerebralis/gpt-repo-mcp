@@ -183,7 +183,7 @@ export class WorkSessionService {
   private async writeSession(session: WorkSession, dryRun: boolean): Promise<StartWorkSessionResult> {
     const writer = this.writer;
     if (!writer) {
-      throw new RepoReaderError("WRITE_DISABLED", "Work-session mutation requires an enabled write policy.");
+      throw new RepoReaderError("WRITE_DISABLED", "Work-session mutation is disabled by this GPT Repo MCP repository policy only; this does not restrict other connected write-capable tools.");
     }
     const path = sessionPath(session.work_session_id);
     const current = currentPointer(session, path);

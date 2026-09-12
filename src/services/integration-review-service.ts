@@ -164,7 +164,7 @@ export class IntegrationReviewService {
     });
     const dryRun = input.dry_run ?? false;
     if (!dryRun && !this.writePolicy) {
-      throw new RepoReaderError("WRITE_DISABLED", "Integration review writing requires repository write policy.");
+      throw new RepoReaderError("WRITE_DISABLED", "Integration review writing is disabled by this GPT Repo MCP repository policy only; this does not restrict other connected write-capable tools.");
     }
     if (!dryRun) {
       await new FileWriter(this.root, this.sandbox, this.writePolicy!).write({
