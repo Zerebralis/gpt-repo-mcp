@@ -114,6 +114,7 @@ describe("PolicyExplainService", () => {
       allowed: false,
       code: "WRITE_DISABLED"
     });
+    expect(result.write.notes).toContain("This restriction is local to GPT Repo MCP and does not restrict other connected write-capable tools.");
     expect(result.cleanup).toMatchObject({
       allowed: false,
       code: "OPERATIONS_DISABLED"

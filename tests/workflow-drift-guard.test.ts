@@ -123,5 +123,8 @@ describe("canonical workflow drift guards", () => {
     const instructions = await readFile("src/instructions.ts", "utf8");
     expect(instructions).toContain("The canonical direct-development path is");
     expect(instructions).toContain("Do not insert task inventory, decision memory, patchsets, delegation, semantic review, or granular Git tools unless the request specifically needs them");
+    expect(instructions).toContain("not a global prohibition");
+    expect(instructions).toContain("use that tool without asking again");
+    expect(instructions).toContain("Never call the session read-only");
   });
 });

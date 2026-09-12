@@ -40,7 +40,7 @@ export class WritePolicy {
     action: "write" | "replace" | "append" | "prepend" | "insert_before" | "insert_after" | "edit";
   }): void {
     if (!this.config.enabled) {
-      throw new RepoReaderError("WRITE_DISABLED", "Writes are disabled for this repository.");
+      throw new RepoReaderError("WRITE_DISABLED", "Writes are disabled for this repository in GPT Repo MCP only; this does not restrict other connected write-capable tools.");
     }
     if (options.bytes > this.config.max_bytes_per_write) {
       throw new RepoReaderError("SIZE_LIMIT_EXCEEDED", `Write exceeds max_bytes_per_write: ${options.path}`);
