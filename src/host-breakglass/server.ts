@@ -9,6 +9,7 @@ import { TransportSessionStore, type SessionReservation } from "../runtime/trans
 import { loadHostBreakglassConfig } from "./config.js";
 import { createHostBreakglassContext } from "./context.js";
 import { createHostBreakglassMcpServer } from "./register.js";
+import { HOST_BREAKGLASS_TOOL_COUNT } from "./tools.js";
 
 const port = readBoundedInteger("GPT_HOST_BREAKGLASS_PORT", 8797, 1, 65_535);
 const host = resolveHost();
@@ -43,7 +44,7 @@ const transports = new TransportSessionStore<StreamableHTTPServerTransport>({ ma
 const mcpRoutes = buildMcpRoutePatterns(publicPathToken);
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, name: "gpt-repo-host-breakglass", mode: config.mode, tool_count: 21 });
+  res.json({ ok: true, name: "gpt-repo-host-breakglass", mode: config.mode, tool_count: HOST_BREAKGLASS_TOOL_COUNT, computer_use: config.computer_use.enabled });
 });
 
 function authorized(req: Request, res: Response): boolean {
@@ -135,6 +136,7 @@ async function shutdown(): Promise<void> {
   shuttingDown = true;
   clearInterval(cleanup);
   await transports.closeAll();
+  await context.computerUse.close();
   await new Promise<void>((done) => httpServer.close(() => done()));
 }
 process.once("SIGINT", () => { void shutdown(); });

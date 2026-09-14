@@ -45,6 +45,19 @@ describe("host breakglass policy", () => {
     expect(() => assertShellCommandAllowed(full, guarded, "HOST_BREAKGLASS_FULL")).not.toThrow();
   });
 
+  it("requires the Computer-Use adapter to stay on loopback", () => {
+    expect(() => HostBreakglassConfigSchema.parse({
+      enabled: true,
+      roots: [{ id: "test", root: tmpdir(), read: true, write: true, execute: true }],
+      computer_use: { enabled: true, server_url: "https://desktop.example/mcp" }
+    })).toThrow(/loopback/i);
+    expect(HostBreakglassConfigSchema.parse({
+      enabled: true,
+      roots: [{ id: "test", root: tmpdir(), read: true, write: true, execute: true }],
+      computer_use: { enabled: true, server_url: "http://127.0.0.1:3107/mcp" }
+    }).computer_use.enabled).toBe(true);
+  });
+
   it("uses a minimal inherited environment", () => {
     const env = minimalHostEnv({ BREAKGLASS_TEST: "yes" });
     expect(env.BREAKGLASS_TEST).toBe("yes");

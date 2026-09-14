@@ -4,6 +4,26 @@ import { z } from "zod";
 
 const PositiveIntSchema = z.number().int().positive();
 
+export const DEFAULT_COMPUTER_USE_ALLOWED_TOOLS = [
+  "doctor", "policy_status", "screenshot", "zoom",
+  "left_click", "right_click", "middle_click", "double_click", "triple_click",
+  "mouse_move", "left_click_drag", "cursor_position", "left_mouse_down", "left_mouse_up",
+  "scroll", "type", "key", "hold_key",
+  "open_application", "get_frontmost_app", "list_windows", "list_running_apps",
+  "hide_app", "unhide_app", "get_display_size", "list_displays", "get_window", "get_cursor_window",
+  "activate_app", "activate_window", "resize_window", "wait",
+  "get_ui_tree", "get_focused_element", "find_element", "click_element", "set_value",
+  "press_button", "select_menu_item", "fill_form", "list_menu_bar",
+  "get_tool_guide", "get_app_capabilities", "get_tool_metadata"
+] as const;
+
+const LoopbackMcpUrlSchema = z.string().url().refine((value) => {
+  const url = new URL(value);
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const loopback = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+  return url.protocol === "http:" && loopback && url.pathname.replace(/\/+$/, "") === "/mcp" && !url.username && !url.password;
+}, "computer_use.server_url must be an unauthenticated loopback http://.../mcp URL");
+
 export const HostRootSchema = z.object({
   id: z.string().min(1).regex(/^[A-Za-z0-9_.-]+$/),
   root: z.string().min(1),
@@ -54,6 +74,15 @@ export const HostBreakglassConfigSchema = z.object({
     allowlist: z.array(z.string().min(1)).default([])
   }).strict().default({
     allowlist: []
+  }),
+  computer_use: z.object({
+    enabled: z.boolean().default(false),
+    server_url: LoopbackMcpUrlSchema.default("http://127.0.0.1:3107/mcp"),
+    allowed_tools: z.array(z.string().min(1).regex(/^[A-Za-z0-9_.-]+$/)).max(64).default([...DEFAULT_COMPUTER_USE_ALLOWED_TOOLS])
+  }).strict().default({
+    enabled: false,
+    server_url: "http://127.0.0.1:3107/mcp",
+    allowed_tools: [...DEFAULT_COMPUTER_USE_ALLOWED_TOOLS]
   }),
   audit_path: z.string().min(1).optional()
 }).strict().superRefine((config, ctx) => {

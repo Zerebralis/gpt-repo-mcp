@@ -15,6 +15,7 @@ const P = z.string().min(2);
 const approval = z.string().max(100).optional();
 const pos = z.number().int().positive();
 const empty = {};
+export const HOST_BREAKGLASS_TOOL_COUNT = 23;
 
 export function registerHostBreakglassTools(server: McpServer, context: HostBreakglassContext): void {
   server.registerTool("host_list_roots", { title: "List host roots", description: "List roots and capabilities approved for breakglass use.", inputSchema: empty, annotations: readOnlyAnnotations }, async () => executeTool(context, "host_list_roots", async () => ({ mode: context.config.mode, full_host_access: context.config.full_host_access, roots: context.config.roots })));
@@ -68,6 +69,23 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
   server.registerTool("host_service_list", { title: "List services", description: "List Windows services.", inputSchema: empty, annotations: readOnlyAnnotations }, async () => executeTool(context, "host_service_list", () => hostServiceList(context)));
   server.registerTool("host_service_start", { title: "Start service", description: "Start an allowlisted Windows service, or use full-mode approval.", inputSchema: { name: z.string().min(1).max(300), approval }, annotations: safeMutationAnnotations }, async (args) => executeTool(context, "host_service_start", () => hostServiceControl(context, { action: "start", ...args }), { target_kind: `service:${args.name}` }));
   server.registerTool("host_service_stop", { title: "Stop service", description: "Stop an allowlisted Windows service, or use full-mode approval.", inputSchema: { name: z.string().min(1).max(300), approval }, annotations: writeAnnotations }, async (args) => executeTool(context, "host_service_stop", () => hostServiceControl(context, { action: "stop", ...args }), { target_kind: `service:${args.name}` }));
+
+  server.registerTool("host_computer_use_catalog", {
+    title: "Computer-Use catalog",
+    description: "List GUI/Desktop tools exposed by the loopback Computer-Use adapter and allowed by breakglass policy.",
+    inputSchema: empty,
+    annotations: readOnlyAnnotations
+  }, async () => executeTool(context, "host_computer_use_catalog", () => context.computerUse.catalog(), { target_kind: "computer-use:catalog" }));
+
+  server.registerTool("host_computer_use_call", {
+    title: "Computer-Use call",
+    description: "Call one approved GUI/Desktop Computer-Use tool through the local loopback adapter. Downstream MCP image content is preserved.",
+    inputSchema: {
+      tool: z.string().min(1).max(200).regex(/^[A-Za-z0-9_.-]+$/),
+      arguments: z.record(z.string(), z.unknown()).default({})
+    },
+    annotations: writeAnnotations
+  }, async (args) => executeComputerUseTool(context, args.tool, args.arguments));
 }
 
 type AuditMeta = { root_id?: string; target_kind?: string; command_hash?: string; pid?: number };
@@ -82,6 +100,37 @@ async function executeTool(context: HostBreakglassContext, action: string, opera
     const message = error instanceof Error ? error.message : String(error);
     await context.audit.write({ action, ok: false, duration_ms: Date.now() - started, ...meta, detail: error instanceof Error ? error.name : "error" });
     return { isError: true, content: [{ type: "text", text: JSON.stringify({ ok: false, error: { code: "HOST_BREAKGLASS_ERROR", message, retryable: false } }, null, 2) }] };
+  }
+}
+
+async function executeComputerUseTool(
+  context: HostBreakglassContext,
+  tool: string,
+  args: Record<string, unknown>
+): Promise<CallToolResult> {
+  const started = Date.now();
+  try {
+    const result = await context.computerUse.call(tool, args);
+    await context.audit.write({
+      action: "host_computer_use_call",
+      ok: result.isError !== true,
+      duration_ms: Date.now() - started,
+      target_kind: `computer-use:${tool}`
+    });
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await context.audit.write({
+      action: "host_computer_use_call",
+      ok: false,
+      duration_ms: Date.now() - started,
+      target_kind: `computer-use:${tool}`,
+      detail: error instanceof Error ? error.name : "error"
+    });
+    return {
+      isError: true,
+      content: [{ type: "text", text: JSON.stringify({ ok: false, error: { code: "HOST_BREAKGLASS_COMPUTER_USE_ERROR", message, retryable: true } }, null, 2) }]
+    };
   }
 }
 

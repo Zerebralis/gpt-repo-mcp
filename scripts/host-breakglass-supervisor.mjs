@@ -1,4 +1,4 @@
-/* global process, console, setTimeout */
+/* global process, console, fetch, setTimeout, AbortSignal, URL */
 import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
@@ -8,8 +8,9 @@ const stateDir = process.env.GPT_HOST_BREAKGLASS_STATE_DIR ?? join(process.env.L
 const statePath = join(stateDir, "supervisor-state.json");
 const logPath = join(stateDir, "supervisor.log");
 const connectorPath = join(repoRoot, "scripts", "connect-host-breakglass-openai.mjs");
+const computerUsePath = join(repoRoot, "scripts", "host-breakglass-computer-use.mjs");
 const backoffMs = [2_000, 5_000, 15_000, 30_000, 60_000];
-let child;
+const children = new Map();
 let stopping = false;
 let restarts = 0;
 
@@ -31,26 +32,39 @@ while (!stopping) {
   }
 
   const startedAt = Date.now();
-  child = spawn(process.execPath, [connectorPath], {
-    cwd: repoRoot,
-    env: process.env,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true
-  });
-  const childPid = child.pid;
-  await writeState({ status: "running", child_pid: childPid, restart_count: restarts });
-  pipeToLog(child.stdout, "connector");
-  pipeToLog(child.stderr, "connector");
-  const result = await waitForExit(child);
-  child = undefined;
-  if (stopping) break;
+  try {
+    if (preflight.computerUseUrl) {
+      const gui = startChild("computer-use", computerUsePath, preflight.env);
+      await waitForMcp(preflight.computerUseUrl, gui, 15_000);
+      log("computer-use ready");
+    }
 
+    const connector = startChild("connector", connectorPath, preflight.env);
+    await writeState({
+      status: "running",
+      restart_count: restarts,
+      connector_pid: connector.pid ?? null,
+      computer_use_pid: children.get("computer-use")?.pid ?? null
+    });
+
+    const ended = await Promise.race(
+      [...children.entries()].map(([label, child]) => waitForExit(child).then((result) => ({ label, ...result })))
+    );
+    if (stopping) break;
+    log(`${ended.label} exit code=${ended.code ?? "null"} signal=${ended.signal ?? "null"}`);
+  } catch (error) {
+    if (!stopping) log(`cycle failure: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    await stopChildren();
+  }
+
+  if (stopping) break;
   const runtimeMs = Date.now() - startedAt;
   if (runtimeMs > 5 * 60_000) restarts = 0;
   else restarts += 1;
-  const backoff = backoffMs[Math.min(restarts - 1, backoffMs.length - 1)];
-  log(`connector exit code=${result.code ?? "null"} signal=${result.signal ?? "null"} runtime_ms=${runtimeMs} restart_in_ms=${backoff}`);
-  await writeState({ status: "restarting", child_pid: null, restart_count: restarts, last_exit_code: result.code, last_signal: result.signal, restart_in_ms: backoff });
+  const backoff = backoffMs[Math.min(Math.max(restarts - 1, 0), backoffMs.length - 1)];
+  await writeState({ status: "restarting", restart_count: restarts, restart_in_ms: backoff });
+  log(`restart in ${backoff}ms`);
   await delay(backoff);
 }
 
@@ -60,14 +74,79 @@ async function preflightConfig() {
   try { raw = await readFile(envPath, "utf8"); }
   catch { return { ok: false, reason: "host.env missing" }; }
   const values = parseEnv(raw);
-  const required = ["CONTROL_PLANE_TUNNEL_ID", "CONTROL_PLANE_API_KEY"];
-  for (const name of required) if (!values[name]?.trim()) return { ok: false, reason: `${name} missing` };
+  for (const name of ["CONTROL_PLANE_TUNNEL_ID", "CONTROL_PLANE_API_KEY"]) {
+    if (!values[name]?.trim()) return { ok: false, reason: `${name} missing` };
+  }
   const binary = values.GPT_HOST_BREAKGLASS_TUNNEL_CLIENT_BIN?.trim() || "C:\\Tools\\openai-tunnel-client\\v0.0.14\\tunnel-client.exe";
   try { await stat(binary); }
   catch { return { ok: false, reason: "tunnel-client binary missing" }; }
-  return { ok: true };
+
+  const configPath = resolve(values.GPT_HOST_BREAKGLASS_CONFIG?.trim() || join(repoRoot, "config.host-breakglass.local.json"));
+  let config;
+  try { config = JSON.parse((await readFile(configPath, "utf8")).replace(/^\uFEFF/, "")); }
+  catch { return { ok: false, reason: "host-breakglass config missing or invalid" }; }
+
+  let computerUseUrl;
+  if (config?.computer_use?.enabled === true) {
+    const entry = values.GPT_HOST_BREAKGLASS_COMPUTER_USE_ENTRY?.trim()
+      || "C:\\Tools\\computer-use-runtime\\node_modules\\@zavora-ai\\computer-use-mcp\\dist\\http.js";
+    try { await stat(entry); }
+    catch { return { ok: false, reason: "computer-use runtime missing" }; }
+    try {
+      const url = new URL(config.computer_use.server_url);
+      assertLoopbackMcpUrl(url);
+      computerUseUrl = url.toString();
+    } catch { return { ok: false, reason: "computer-use URL invalid" }; }
+  }
+
+  return {
+    ok: true,
+    env: { ...process.env, ...values, GPT_HOST_BREAKGLASS_CONFIG: configPath },
+    computerUseUrl
+  };
 }
 
+function startChild(label, script, env) {
+  const child = spawn(process.execPath, [script], {
+    cwd: repoRoot,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true
+  });
+  children.set(label, child);
+  pipeToLog(child.stdout, label);
+  pipeToLog(child.stderr, label);
+  child.once("error", (error) => log(`${label} start error: ${error.message}`));
+  return child;
+}
+
+async function waitForMcp(target, child, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) throw new Error("computer-use exited before readiness");
+    try {
+      const response = await fetch(target, { method: "GET", signal: AbortSignal.timeout(500) });
+      if (response.status > 0) return;
+    } catch { /* still starting */ }
+    await delay(100);
+  }
+  throw new Error("computer-use did not become reachable");
+}
+
+async function stopChildren() {
+  const live = [...children.values()].filter((child) => child.exitCode === null && child.signalCode === null);
+  for (const child of live) child.kill("SIGTERM");
+  await Promise.race([Promise.allSettled(live.map((child) => waitForExit(child))), delay(1_500)]);
+  for (const child of live) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  children.clear();
+}
+
+function assertLoopbackMcpUrl(url) {
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "::1"].includes(host) || url.pathname.replace(/\/+$/, "") !== "/mcp") {
+    throw new Error("not loopback MCP");
+  }
+}
 function parseEnv(raw) {
   const values = {};
   for (const line of raw.split(/\r?\n/)) {
@@ -82,7 +161,10 @@ function unquote(value) {
   const trimmed = value.trim();
   return ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) ? trimmed.slice(1, -1) : trimmed;
 }
-function waitForExit(proc) { return new Promise((resolveExit) => proc.once("exit", (code, signal) => resolveExit({ code, signal }))); }
+function waitForExit(proc) {
+  if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve({ code: proc.exitCode, signal: proc.signalCode });
+  return new Promise((resolveExit) => proc.once("exit", (code, signal) => resolveExit({ code, signal })));
+}
 function pipeToLog(stream, label) {
   if (!stream) return;
   let buffer = "";
@@ -112,7 +194,9 @@ function shutdown(code) {
   if (stopping) return;
   stopping = true;
   log(`supervisor shutdown code=${code}`);
-  if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-  void writeState({ status: "stopping", child_pid: child?.pid ?? null }).finally(() => setTimeout(() => process.exit(code), 1500).unref());
+  void writeState({ status: "stopping" }).finally(async () => {
+    await stopChildren();
+    process.exit(code);
+  });
 }
 function delay(ms) { return new Promise((resolveDelay) => setTimeout(resolveDelay, ms)); }

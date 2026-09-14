@@ -1,10 +1,22 @@
-﻿{
+{
   "enabled": false,
   "mode": "safe",
   "full_host_access": false,
   "roots": [
-    { "id": "tools", "root": "C:\\Tools", "read": true, "write": true, "execute": true },
-    { "id": "projects", "root": "C:\\Users\\YOUR_USER\\Documents\\ChatGPT", "read": true, "write": true, "execute": true }
+    {
+      "id": "tools",
+      "root": "C:\\Tools",
+      "read": true,
+      "write": true,
+      "execute": true
+    },
+    {
+      "id": "projects",
+      "root": "C:\\Users\\YOUR_USER\\Documents\\ChatGPT",
+      "read": true,
+      "write": true,
+      "execute": true
+    }
   ],
   "limits": {
     "max_read_bytes": 8388608,
@@ -16,7 +28,23 @@
     "max_search_results": 250,
     "max_search_files": 20000
   },
-  "git": { "allow_push": true, "allow_merge": true, "allowed_remotes": ["origin"] },
-  "registry": { "write_hives": ["HKCU"] },
-  "services": { "allowlist": [] }
+  "git": {
+    "allow_push": true,
+    "allow_merge": true,
+    "allowed_remotes": [
+      "origin"
+    ]
+  },
+  "registry": {
+    "write_hives": [
+      "HKCU"
+    ]
+  },
+  "services": {
+    "allowlist": []
+  },
+  "computer_use": {
+    "enabled": false,
+    "server_url": "http://127.0.0.1:3107/mcp"
+  }
 }

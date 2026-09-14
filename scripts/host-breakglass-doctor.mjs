@@ -1,4 +1,4 @@
-/* global process, console, setTimeout, clearTimeout, fetch, AbortSignal */
+/* global process, console, setTimeout, clearTimeout, fetch, AbortSignal, URL */
 import { access, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join, resolve } from "node:path";
@@ -14,17 +14,20 @@ const port = Number(process.env.GPT_HOST_BREAKGLASS_PORT ?? envValues.GPT_HOST_B
 const tunnelClient = process.env.GPT_HOST_BREAKGLASS_TUNNEL_CLIENT_BIN
   ?? envValues.GPT_HOST_BREAKGLASS_TUNNEL_CLIENT_BIN
   ?? "C:\\Tools\\openai-tunnel-client\\v0.0.14\\tunnel-client.exe";
-const report = { ok: true, core_ok: true, transport_ready: true, config: configPath, checks: [] };
+const report = { ok: true, core_ok: true, gui_ready: true, transport_ready: true, config: configPath, checks: [] };
+let hostConfig;
 
 function check(scope, name, ok, detail) {
   report.checks.push({ scope, name, ok, detail });
   if (!ok && scope === "core") report.core_ok = false;
+  if (!ok && scope === "gui") report.gui_ready = false;
   if (!ok && scope === "transport") report.transport_ready = false;
 }
 
 try {
   const raw = await readFile(configPath, "utf8");
   const config = JSON.parse(raw.replace(/^\uFEFF/, ""));
+  hostConfig = config;
   check("core", "config_enabled", config.enabled === true, config.enabled === true ? "enabled" : "disabled");
   check("core", "safe_or_full_mode", config.mode === "safe" || config.mode === "full", String(config.mode));
   check("core", "roots_present", Array.isArray(config.roots) && (config.roots.length > 0 || config.full_host_access === true), `${config.roots?.length ?? 0} configured`);
@@ -48,6 +51,27 @@ check("core", "git", git.status === 0, (git.stdout || git.stderr).trim());
 const portState = await probePort(port);
 check("core", "port", true, portState);
 
+if (hostConfig?.computer_use?.enabled === true) {
+  const entry = process.env.GPT_HOST_BREAKGLASS_COMPUTER_USE_ENTRY
+    ?? envValues.GPT_HOST_BREAKGLASS_COMPUTER_USE_ENTRY
+    ?? "C:\\Tools\\computer-use-runtime\\node_modules\\@zavora-ai\\computer-use-mcp\\dist\\http.js";
+  try {
+    await access(entry, constants.R_OK);
+    check("gui", "computer_use_runtime", true, "present");
+  } catch {
+    check("gui", "computer_use_runtime", false, "missing");
+  }
+  try {
+    const target = new URL(hostConfig.computer_use.server_url);
+    const response = await fetch(target, { method: "GET", signal: AbortSignal.timeout(2_000) });
+    check("gui", "computer_use_loopback", response.status > 0, `reachable status=${response.status}`);
+  } catch (error) {
+    check("gui", "computer_use_loopback", false, error instanceof Error ? error.name : "unreachable");
+  }
+} else {
+  check("gui", "computer_use", true, "disabled");
+}
+
 check("transport", "env_file", Object.keys(envValues).length > 0, Object.keys(envValues).length > 0 ? "present" : "missing");
 check("transport", "tunnel_id", Boolean(envValues.CONTROL_PLANE_TUNNEL_ID?.trim() || process.env.CONTROL_PLANE_TUNNEL_ID?.trim()), "configured=" + Boolean(envValues.CONTROL_PLANE_TUNNEL_ID?.trim() || process.env.CONTROL_PLANE_TUNNEL_ID?.trim()));
 check("transport", "runtime_api_key", Boolean(envValues.CONTROL_PLANE_API_KEY?.trim() || process.env.CONTROL_PLANE_API_KEY?.trim()), "configured=" + Boolean(envValues.CONTROL_PLANE_API_KEY?.trim() || process.env.CONTROL_PLANE_API_KEY?.trim()));
@@ -65,7 +89,7 @@ try {
   check("transport", "openai_https_443", false, error instanceof Error ? error.name : "unreachable");
 }
 
-report.ok = report.core_ok && (coreOnly || report.transport_ready);
+report.ok = report.core_ok && report.gui_ready && (coreOnly || report.transport_ready);
 console.log(JSON.stringify(report, null, 2));
 process.exitCode = report.ok ? 0 : 1;
 

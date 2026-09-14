@@ -36,7 +36,7 @@ they can perform the task.
 
 ## Tool Surface
 
-The host server currently exposes 21 tools:
+The host server currently exposes 23 tools:
 
 - roots and filesystem: list roots, stat, read, write, exact edit, directory
   listing, and bounded search;
@@ -44,7 +44,9 @@ The host server currently exposes 21 tools:
 - Git: status, diff, log, branch, add, commit, fetch, fast-forward pull, push,
   and merge;
 - Windows: system information, process listing and guarded process termination,
-  registry read/write, and service list/start/stop.
+  registry read/write, and service list/start/stop;
+- GUI adapter: an allowed Computer-Use catalog plus a raw MCP call proxy that
+  preserves downstream image content.
 
 Git push is disabled unless `git.allow_push` is enabled. Only configured remote
 names are accepted. Push and other mutating Git calls can be bound to an
@@ -65,6 +67,41 @@ Use `host-breakglass.env.example` as the key-name template. Do not commit the
 local file. Runtime API keys, tunnel credentials, and path tokens must never be
 stored in Git.
 
+## GUI / Computer-Use Adapter
+
+GUI control is delegated to the pinned local `@zavora-ai/computer-use-mcp`
+runtime instead of duplicating screenshot, input, window, and accessibility
+implementations inside Host Breakglass.
+
+The local recovery installation uses version `7.1.0` under
+`C:\Tools\computer-use-runtime` and starts its HTTP runner on loopback. The
+Breakglass adapter itself refuses non-loopback Computer-Use URLs.
+
+The recommended maximum and active profile is `ax`. That provides observation,
+pointer/keyboard, window/application, and accessibility/UI Automation while
+leaving duplicate filesystem, registry, process, and arbitrary scripting work
+to the native Host Breakglass tools.
+
+The downstream `ax` profile currently exposes 46 tools. Host Breakglass allows
+44 by default; `read_clipboard` and `write_clipboard` are deliberately excluded
+from the default allowlist. Change `computer_use.allowed_tools` only when that
+extra authority is actually needed.
+
+Two host tools represent the adapter:
+
+- `host_computer_use_catalog` returns only the downstream tools allowed by the
+  Host Breakglass policy;
+- `host_computer_use_call` forwards one allowed call and preserves the original
+  MCP result, including screenshot image content.
+
+Run the GUI backend alone with:
+
+```powershell
+npm run host:computer-use
+```
+
+The independent supervisor starts and monitors this backend automatically when
+`computer_use.enabled=true`.
 ## Preferred Transport: OpenAI Secure MCP Tunnel
 
 The preferred remote path is OpenAI Secure MCP Tunnel because it is outbound
@@ -167,6 +204,8 @@ with RDC and AWA unavailable to:
 5. review Git state, commit, and push a bounded repair branch; and
 6. verify AWA is reachable again.
 
-The future Computer-Use/GUI adapter is a separate slice. Until it is integrated
-and accepted, Host Breakglass provides host/filesystem/terminal/Git/Windows
-recovery but does not claim full mouse/keyboard/browser parity with RDC.
+The Computer-Use adapter now covers screenshots, mouse/keyboard, windows,
+applications, and Windows UI Automation through the independent loopback
+runtime. Browser automation therefore works at the desktop/UI level;
+browser-session-specific AWA semantics remain a separate capability and are not
+implied by this adapter.

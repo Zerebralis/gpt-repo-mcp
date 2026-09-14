@@ -59,7 +59,9 @@
     "host:supervisor": "node scripts/host-breakglass-supervisor.mjs",
     "host:autostart:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/host-breakglass-autostart.ps1 install",
     "host:autostart:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/host-breakglass-autostart.ps1 uninstall",
-    "host:autostart:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/host-breakglass-autostart.ps1 status"
+    "host:autostart:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/host-breakglass-autostart.ps1 status",
+    "host:computer-use": "node scripts/host-breakglass-computer-use.mjs",
+    "host:gui:smoke": "npm run build && node scripts/smoke-host-breakglass-gui.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
