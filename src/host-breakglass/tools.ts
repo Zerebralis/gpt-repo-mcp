@@ -17,6 +17,14 @@ const pos = z.number().int().positive();
 const empty = {};
 export const HOST_BREAKGLASS_TOOL_COUNT = 23;
 
+export function buildHostShellInvocation(command: string): { executable: string; args: string[] } {
+  if (process.platform === "win32") {
+    const wrappedCommand = `${command}\nif ($?) { exit 0 }\nif ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }\nexit 1`;
+    return { executable: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", wrappedCommand] };
+  }
+  return { executable: "/bin/sh", args: ["-lc", command] };
+}
+
 export function registerHostBreakglassTools(server: McpServer, context: HostBreakglassContext): void {
   server.registerTool("host_list_roots", { title: "List host roots", description: "List roots and capabilities approved for breakglass use.", inputSchema: empty, annotations: readOnlyAnnotations }, async () => executeTool(context, "host_list_roots", async () => ({ mode: context.config.mode, full_host_access: context.config.full_host_access, roots: context.config.roots })));
 
@@ -44,7 +52,7 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
   server.registerTool("host_shell", { title: "Run breakglass shell", description: "Run a bounded PowerShell or POSIX shell command with an approved working directory. Safe mode adds high-risk command guardrails; arbitrary shell execution is not a filesystem sandbox.", inputSchema: { command: z.string().min(1).max(32_000), cwd: P, timeout_ms: pos.optional(), approval }, annotations: writeAnnotations }, async (args) => executeTool(context, "host_shell", async () => {
     const resolved = await context.paths.resolve(args.cwd, "execute");
     assertShellCommandAllowed(context.config, args.command, args.approval);
-    const shell = process.platform === "win32" ? { executable: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", args.command] } : { executable: "/bin/sh", args: ["-lc", args.command] };
+    const shell = buildHostShellInvocation(args.command);
     return runProcessWithTail({ executable: shell.executable, args: shell.args, cwd: resolved.path, env: minimalHostEnv(), timeout_ms: clampTimeout(context, args.timeout_ms), tail_bytes: context.config.limits.max_output_bytes });
   }, { root_id: rootForPath(context, args.cwd), command_hash: shortHash(args.command), target_kind: "shell" }));
 
