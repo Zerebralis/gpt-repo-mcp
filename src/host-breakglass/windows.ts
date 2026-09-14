@@ -8,6 +8,26 @@ const PROTECTED_PROCESS_NAMES = new Set([
   "winlogon.exe", "services.exe", "lsass.exe", "svchost.exe"
 ]);
 
+type WindowsProcessDetails = {
+  ProcessId: number;
+  ParentProcessId: number;
+  Name?: string | null;
+  ExecutablePath?: string | null;
+  CommandLine?: string | null;
+};
+
+const PROTECTED_BREAKGLASS_COMMAND_MARKERS = [
+  "\\gpt-repo-mcp\\scripts\\host-breakglass-supervisor.mjs",
+  "\\gpt-repo-mcp\\scripts\\host-breakglass-computer-use.mjs",
+  "\\gpt-repo-mcp\\scripts\\connect-host-breakglass-openai.mjs",
+  "dist\\host-breakglass\\server.js",
+  "\\computer-use-runtime\\node_modules\\@zavora-ai\\computer-use-mcp\\dist\\http.js"
+];
+
+const PROTECTED_BREAKGLASS_EXECUTABLE_MARKERS = [
+  "\\tools\\openai-tunnel-client\\"
+];
+
 export function hostSystemInfo() {
   return {
     platform: process.platform,
@@ -36,19 +56,35 @@ export async function hostSystemProcesses(context: HostBreakglassContext) {
 
 export async function hostKillSystemProcess(
   context: HostBreakglassContext,
-  input: { pid: number; approval?: string }
+  input: { pid: number; tree?: boolean; approval?: string }
 ) {
   ensureWindows();
   if (!Number.isInteger(input.pid) || input.pid <= 4 || input.pid === process.pid) {
     throw new Error("Refusing to terminate a critical or current process.");
   }
-  const name = await processName(context, input.pid);
+
+  const target = await processDetails(context, input.pid);
+  const name = target?.Name ?? undefined;
   const protectedName = name ? PROTECTED_PROCESS_NAMES.has(name.toLowerCase()) : false;
   if (protectedName && !(context.config.mode === "full" && input.approval === "HOST_BREAKGLASS_FULL")) {
     throw new Error(`Process ${name} is protected in safe mode.`);
   }
-  const result = await runBounded(context, "taskkill", ["/PID", String(input.pid), "/T", "/F"], 30_000);
-  return { pid: input.pid, process_name: name, ...result };
+  if (target) assertBreakglassProcessNotProtected(target);
+
+  const tree = input.tree === true;
+  if (tree) {
+    const descendants = await processTreeDetails(context, input.pid);
+    const protectedDescendant = descendants.find((entry) => entry.ProcessId !== input.pid && protectedBreakglassRole(entry));
+    if (protectedDescendant) {
+      throw new Error(
+        `Refusing tree termination because descendant PID ${protectedDescendant.ProcessId} is a protected ${protectedBreakglassRole(protectedDescendant)} process.`
+      );
+    }
+  }
+
+  const args = ["/PID", String(input.pid), ...(tree ? ["/T"] : []), "/F"];
+  const result = await runBounded(context, "taskkill", args, 30_000);
+  return { pid: input.pid, process_name: name, tree, ...result };
 }
 
 export async function hostRegistryRead(
@@ -108,15 +144,78 @@ export async function hostServiceControl(
   return runBounded(context, "sc.exe", [input.action, input.name], 30_000);
 }
 
-async function processName(context: HostBreakglassContext, pid: number): Promise<string | undefined> {
-  const script = `$p=Get-Process -Id ${pid} -ErrorAction Stop; [Console]::Out.Write($p.ProcessName + '.exe')`;
+async function processDetails(context: HostBreakglassContext, pid: number): Promise<WindowsProcessDetails | undefined> {
+  const script = [
+    `$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction SilentlyContinue`,
+    "if ($null -ne $p) { $p | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Compress }"
+  ].join("; ");
   const result = await runBounded(
     context,
     "powershell.exe",
     ["-NoProfile", "-NonInteractive", "-Command", script],
     15_000
   );
-  return result.exit_code === 0 ? result.stdout_tail.trim() : undefined;
+  if (result.exit_code !== 0 || !result.stdout_tail.trim()) return undefined;
+  return parseProcessDetails(result.stdout_tail.trim());
+}
+
+async function processTreeDetails(context: HostBreakglassContext, pid: number): Promise<WindowsProcessDetails[]> {
+  const script = [
+    "$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine)",
+    "$ids = [System.Collections.Generic.HashSet[int]]::new()",
+    `[void]$ids.Add(${pid})`,
+    "do { $added = $false; foreach ($p in $all) { if (-not $ids.Contains([int]$p.ProcessId) -and $ids.Contains([int]$p.ParentProcessId)) { [void]$ids.Add([int]$p.ProcessId); $added = $true } } } while ($added)",
+    "@($all | Where-Object { $ids.Contains([int]$_.ProcessId) }) | ConvertTo-Json -Compress"
+  ].join("; ");
+  const result = await runBounded(
+    context,
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    30_000
+  );
+  if (result.exit_code !== 0 || !result.stdout_tail.trim()) return [];
+  const parsed = JSON.parse(result.stdout_tail.trim()) as WindowsProcessDetails | WindowsProcessDetails[];
+  return (Array.isArray(parsed) ? parsed : [parsed]).map(normalizeProcessDetails);
+}
+
+function parseProcessDetails(value: string): WindowsProcessDetails {
+  return normalizeProcessDetails(JSON.parse(value) as WindowsProcessDetails);
+}
+
+function normalizeProcessDetails(value: WindowsProcessDetails): WindowsProcessDetails {
+  return {
+    ProcessId: Number(value.ProcessId),
+    ParentProcessId: Number(value.ParentProcessId),
+    Name: value.Name ?? null,
+    ExecutablePath: value.ExecutablePath ?? null,
+    CommandLine: value.CommandLine ?? null
+  };
+}
+
+function assertBreakglassProcessNotProtected(target: WindowsProcessDetails): void {
+  const role = protectedBreakglassRole(target);
+  if (role) throw new Error(`Refusing to terminate protected ${role} process PID ${target.ProcessId}.`);
+}
+
+export function protectedBreakglassRole(target: WindowsProcessDetails): string | undefined {
+  const commandLine = normalizeProcessText(target.CommandLine);
+  const executablePath = normalizeProcessText(target.ExecutablePath);
+
+  if (PROTECTED_BREAKGLASS_COMMAND_MARKERS.some((marker) => commandLine.includes(marker))) {
+    if (commandLine.includes("host-breakglass-supervisor.mjs")) return "Host Breakglass supervisor";
+    if (commandLine.includes("host-breakglass-computer-use.mjs") || commandLine.includes("computer-use-runtime")) return "Computer-Use";
+    if (commandLine.includes("connect-host-breakglass-openai.mjs")) return "Host Breakglass tunnel launcher";
+    if (commandLine.includes("dist\\host-breakglass\\server.js")) return "Host Breakglass server";
+    return "Host Breakglass component";
+  }
+  if (PROTECTED_BREAKGLASS_EXECUTABLE_MARKERS.some((marker) => executablePath.includes(marker))) {
+    return "OpenAI tunnel-client";
+  }
+  return undefined;
+}
+
+function normalizeProcessText(value: string | null | undefined): string {
+  return (value ?? "").replaceAll("/", "\\").toLowerCase();
 }
 
 function assertRegistryWriteAllowed(
