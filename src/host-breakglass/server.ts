@@ -15,8 +15,8 @@ const port = readBoundedInteger("GPT_HOST_BREAKGLASS_PORT", 8797, 1, 65_535);
 const host = resolveHost();
 const configPath = resolve(process.env.GPT_HOST_BREAKGLASS_CONFIG ?? "config.host-breakglass.local.json");
 const publicPathToken = process.env.GPT_HOST_BREAKGLASS_PUBLIC_PATH_TOKEN;
-const maxSessions = readBoundedInteger("GPT_HOST_BREAKGLASS_MAX_SESSIONS", 25, 1, 250);
-const sessionIdleTtlMs = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS", 30 * 60_000, 1_000, 24 * 60 * 60_000);
+const maxSessions = readBoundedInteger("GPT_HOST_BREAKGLASS_MAX_SESSIONS", 100, 1, 250);
+const sessionIdleTtlMs = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS", 10 * 60_000, 1_000, 24 * 60 * 60_000);
 
 if (!isLoopback(host) && !publicPathToken) {
   throw new Error("External host-breakglass bind requires GPT_HOST_BREAKGLASS_PUBLIC_PATH_TOKEN.");
@@ -44,7 +44,7 @@ const transports = new TransportSessionStore<StreamableHTTPServerTransport>({ ma
 const mcpRoutes = buildMcpRoutePatterns(publicPathToken);
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, name: "gpt-repo-host-breakglass", mode: config.mode, tool_count: HOST_BREAKGLASS_TOOL_COUNT, computer_use: config.computer_use.enabled });
+  res.json({ ok: true, name: "gpt-repo-host-breakglass", mode: config.mode, tool_count: HOST_BREAKGLASS_TOOL_COUNT, computer_use: config.computer_use.enabled, mcp_sessions: { active: transports.size, capacity: maxSessions, idle_ttl_ms: sessionIdleTtlMs } });
 });
 
 function authorized(req: Request, res: Response): boolean {
@@ -63,6 +63,7 @@ app.post(mcpRoutes, async (req: Request, res: Response) => {
     if (!transport && !sessionId && isInitializeRequest(req.body)) {
       reservation = await transports.reserve();
       if (!reservation) {
+        console.error(`host-breakglass MCP session capacity reached active=${transports.size} max=${maxSessions}`);
         res.status(503).json({ jsonrpc: "2.0", error: { code: -32001, message: "MCP session capacity reached" }, id: (req.body as { id?: unknown }).id ?? null });
         return;
       }

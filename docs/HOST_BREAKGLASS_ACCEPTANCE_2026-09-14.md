@@ -1,4 +1,4 @@
-# Host Breakglass Acceptance — 2026-09-14
+# Host Breakglass Acceptance ï¿½ 2026-09-14
 
 ## Status
 
@@ -8,9 +8,9 @@
 | Files / shell / processes / Git / Windows | ACCEPTED locally | Built MCP smoke passed file mutation, bounded shell, managed processes, Git commit + push to a temporary bare remote, stale-HEAD rejection, Windows processes, HKCU registry set/read/delete, services, and root policy. |
 | GUI / Computer-Use | ACCEPTED locally | Pinned Computer-Use 7.1.0 `ax` runtime; GUI smoke passed catalog filtering, screenshot image passthrough, and mouse movement. |
 | Independent lifecycle | IMPLEMENTED | Breakglass supervisor owns Computer-Use + Secure MCP Tunnel children with bounded restart backoff; Windows logon task installer is fail-closed. |
-| OpenAI Secure MCP transport | PREPARED / AUTH BLOCKED | Official Windows tunnel-client 0.0.14 installed and checksum-verified; HTTPS/443 to OpenAI reachable. Tunnel ID and restricted Runtime API key are not configured yet. |
+| OpenAI Secure MCP transport | ACCEPTED remote | Official Windows tunnel-client 0.0.14 is authenticated, the supervisor/autostart stack is running, `/readyz` and `/healthz` return 200, and a fresh ChatGPT conversation successfully called Host Breakglass. |
 | AWA recovery rehearsal | ACCEPTED for diagnosis | AWA was discovered and inspected through Host Breakglass, its test/check chain was executed through Host Breakglass, and its host-runtime doctor was read through Host Breakglass. |
-| Final RDC-off + AWA-off remote recovery | NOT RUN | Requires the OpenAI tunnel authorization and a ChatGPT Tunnel connector first. |
+| Final RDC-off + AWA-off remote recovery | PREFLIGHT IN PROGRESS | Fresh-chat system/root/shell calls passed. RDC and AWA process chains were identified read-only. A session-capacity incident was found and hardened before any intentional control-plane shutdown. |
 
 ## Local Release Gates
 
@@ -65,6 +65,16 @@ The autostart reconciliation status classified the current launcher as
 because the runtime itself was healthy and the authoritative doctor explicitly
 requested manual inspection. This is the correct fail-closed behavior.
 
+## Remote Connector Verification
+
+A fresh ChatGPT conversation selected the `Host Breakglass` Tunnel connector and verified the independent path end to end:
+
+- `host_system_info` returned Windows 10.0.19045, x64, and Node.js v24.14.0;
+- `host_list_roots` returned the six configured root names;
+- `host_shell` executed `Write-Output "HOST_BREAKGLASS_EXEC_OK"` with exit code 0 and empty stderr;
+- the subsequent read-only failover preflight identified both the RDC stack and the active AWA runtime stack without mutating either.
+
+During the longer preflight, the original 25-session / 30-minute transport defaults proved too small for ChatGPT Secure Tunnel workflows that create fresh MCP sessions across separate tool workflows. The Breakglass defaults are now 100 sessions with a 10-minute idle TTL, `/health` reports aggregate session usage, and capacity exhaustion emits a local diagnostic without exposing session IDs. A deliberate 40-session leak simulation passed 40/40 initializations, reported 40/100 active sessions, then returned to 0/100 after a clean supervisor restart while the OpenAI tunnel remained `ready`.
 ## Bootstrap Artifacts
 
 Two external runtime dependencies are now reproducible:
@@ -79,29 +89,18 @@ npm run host:tunnel:install
   pinned in the installer and verified before extraction.
 - The long-lived runtime key and tunnel ID are never stored in tracked files.
 
-## Remaining External Authorization
+## Current Remote Acceptance State
 
-Before the final remote failover test, the local ignored `host.env` needs:
+External tunnel authorization and ChatGPT connector creation are complete. The independent Windows logon task is installed and the supervisor owns both the Computer-Use runtime and OpenAI Secure MCP Tunnel.
 
-```text
-CONTROL_PLANE_TUNNEL_ID=  # set locally from OpenAI Platform Tunnels
-CONTROL_PLANE_API_KEY=  # set locally to a restricted Runtime API key with Tunnels Read + Use
-```
+Remaining acceptance sequence:
 
-Do not use an Admin API key as the long-lived daemon key.
-
-After those values are configured:
-
-1. Run `npm run host:doctor` and require `ok=true`.
-2. Install the independent Windows login task with `npm run host:autostart:install`.
-3. Start or trigger the supervisor and verify its state is `running`, with both connector and Computer-Use child PIDs present.
-4. In ChatGPT connector settings, choose the Tunnel connection and select the Breakglass tunnel.
-5. Open a fresh chat and verify read-only Host Breakglass calls first.
-6. Stop/disable RDC for the acceptance window.
-7. Stop AWA only after the Breakglass connector remains independently reachable.
-8. Through the new chat: inspect AWA, run the AWA doctor, perform only the recovery action the doctor authorizes, verify AWA returns, then exercise bounded Git diff/commit/push on an acceptance branch.
-9. Record receipts and restore the normal primary control plane.
-
+1. Confirm one more fresh-chat read-only call after the session-resilience hardening.
+2. Stop/disable RDC for the acceptance window.
+3. Stop AWA only after Breakglass remains independently reachable with RDC absent.
+4. Through the fresh Breakglass chat, run the AWA doctor and perform only the recovery action it authorizes.
+5. Verify AWA returns healthy, then exercise bounded Git diff/commit/push on an acceptance branch.
+6. Record receipts and restore the normal primary control plane.
 ## Acceptance Rule
 
 Do **not** mark the overall RDC fallback as complete until the final test is

@@ -80,6 +80,10 @@ Use `host-breakglass.env.example` as the key-name template. Do not commit the
 local file. Runtime API keys, tunnel credentials, and path tokens must never be
 stored in Git.
 
+## MCP Session Resilience
+
+The Streamable HTTP server defaults to 100 concurrent MCP sessions with a 10-minute idle TTL. This is intentionally more tolerant of ChatGPT Secure Tunnel workflows, which may create fresh MCP sessions across separate tool workflows instead of promptly deleting every prior session. Override with `GPT_HOST_BREAKGLASS_MAX_SESSIONS` and `GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS` when needed. `/health` exposes only aggregate session counts and limits for diagnostics; it never returns session IDs.
+
 ## GUI / Computer-Use Adapter
 
 GUI control is delegated to the pinned local `@zavora-ai/computer-use-mcp`

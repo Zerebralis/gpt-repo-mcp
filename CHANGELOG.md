@@ -10,6 +10,10 @@ All notable public changes to GPT Repo MCP are documented here.
 - Added OpenAI Secure MCP Tunnel integration, transport diagnostics, supervisor/autostart helpers, and an MCP smoke that exercises temporary Git push and Windows recovery operations.
 - Added a loopback-only Computer-Use adapter and supervised x GUI runtime for screenshots, input, windows, applications, and UI Automation without duplicating the desktop implementation.
 
+### Changed
+
+- Hardened Host Breakglass Streamable HTTP session handling for ChatGPT Secure Tunnel workflows: 100-session default capacity, 10-minute idle TTL, aggregate session telemetry on `/health`, and explicit capacity diagnostics.
+
 ## [0.2.0] - 2026-07-31
 
 ### Added
