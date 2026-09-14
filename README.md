@@ -190,6 +190,8 @@ For the full boundary, threat model, and approval behavior, read
 | `npm run connect` | Start the server and built-in ngrok connection flow |
 | `npm run connect:secure` | Start the server with the OpenAI Secure MCP Tunnel |
 | `npm run host:doctor` | Check Host Breakglass core and independent transport readiness |
+| `npm run host:computer-use:install` | Install/verify the pinned local Computer-Use runtime |
+| `npm run host:tunnel:install` | Install/verify the pinned OpenAI Secure MCP Tunnel client |
 | `npm run host:computer-use` | Start the pinned loopback GUI/UI-Automation backend for Host Breakglass |
 | `npm run host:smoke` | Run the destructive-but-temporary Host Breakglass acceptance smoke |
 | `npm run host:connect` | Start Host Breakglass through the independent OpenAI Secure MCP Tunnel |
@@ -209,6 +211,7 @@ For the full boundary, threat model, and approval behavior, read
 | [Tools and workflows](docs/TOOL_SURFACE.md) | What each tool group enables and when ChatGPT uses it |
 | [Security model](docs/SECURITY.md) | What is protected, what leaves your machine, and what remains your responsibility |
 | [Host Breakglass / RDC fallback](docs/HOST_BREAKGLASS.md) | Separate opt-in operator recovery server with host, Git, Windows, and GUI recovery capabilities |
+| [Host Breakglass acceptance](docs/HOST_BREAKGLASS_ACCEPTANCE_2026-09-14.md) | Current proof, blockers, and the final RDC-off/AWA-off acceptance sequence |
 | [Error reference](docs/ERRORS.md) | Stable error codes and what they mean |
 | [External-agent protocol](docs/DELEGATION_ARTIFACTS.md) | Advanced review workflow when you separately operate an implementation agent |
 | [Migration guide](docs/MIGRATION.md) | Moving from 0.1.x to 0.2.0 |

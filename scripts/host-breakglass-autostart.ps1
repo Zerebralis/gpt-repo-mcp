@@ -43,6 +43,16 @@ if (-not $envValues["CONTROL_PLANE_API_KEY"]) { throw "CONTROL_PLANE_API_KEY is 
 $tunnelClient = $envValues["GPT_HOST_BREAKGLASS_TUNNEL_CLIENT_BIN"]
 if (-not $tunnelClient) { $tunnelClient = "C:\Tools\openai-tunnel-client\v0.0.14\tunnel-client.exe" }
 if (-not (Test-Path $tunnelClient)) { throw "tunnel-client binary not found at configured path" }
+$configPath = $envValues["GPT_HOST_BREAKGLASS_CONFIG"]
+if (-not $configPath) { $configPath = Join-Path $RepoRoot "config.host-breakglass.local.json" }
+if (-not (Test-Path $configPath)) { throw "Host Breakglass config not found at configured path" }
+$config = Get-Content $configPath -Raw | ConvertFrom-Json
+if ($config.enabled -ne $true) { throw "Host Breakglass config is not enabled" }
+if ($config.computer_use -and $config.computer_use.enabled -eq $true) {
+  $computerUseEntry = $envValues["GPT_HOST_BREAKGLASS_COMPUTER_USE_ENTRY"]
+  if (-not $computerUseEntry) { $computerUseEntry = "C:\Tools\computer-use-runtime\node_modules\@zavora-ai\computer-use-mcp\dist\http.js" }
+  if (-not (Test-Path $computerUseEntry)) { throw "Computer-Use runtime not found at configured path" }
+}
 
 $taskAction = New-ScheduledTaskAction -Execute $Node -Argument ('"{0}"' -f $Supervisor) -WorkingDirectory $RepoRoot
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"

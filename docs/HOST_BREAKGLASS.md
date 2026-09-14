@@ -52,6 +52,19 @@ Git push is disabled unless `git.allow_push` is enabled. Only configured remote
 names are accepted. Push and other mutating Git calls can be bound to an
 `expected_head` to reject stale state.
 
+## Bootstrap Installers
+
+The external runtime dependencies can be restored from a clean Windows host
+without rebuilding either project from source:
+
+```powershell
+npm run host:computer-use:install
+npm run host:tunnel:install
+```
+
+Computer-Use is pinned to 7.1.0. The OpenAI tunnel-client installer is pinned
+to 0.0.14 and verifies the release archive against a pinned SHA-256 before
+extraction.
 ## Configuration
 
 Copy `config.host-breakglass.example.json` to the ignored
