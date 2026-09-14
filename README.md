@@ -189,6 +189,9 @@ For the full boundary, threat model, and approval behavior, read
 | `npm run doctor` | Check configuration, scripts, tunnel state, port use, and Git state |
 | `npm run connect` | Start the server and built-in ngrok connection flow |
 | `npm run connect:secure` | Start the server with the OpenAI Secure MCP Tunnel |
+| `npm run host:doctor` | Check Host Breakglass core and independent transport readiness |
+| `npm run host:smoke` | Run the destructive-but-temporary Host Breakglass acceptance smoke |
+| `npm run host:connect` | Start Host Breakglass through the independent OpenAI Secure MCP Tunnel |
 | `npm run check:config` | Validate local configuration |
 
 ## Documentation
@@ -204,6 +207,7 @@ For the full boundary, threat model, and approval behavior, read
 | [Write workflows](docs/WRITE_WORKFLOWS.md) | Editing, validation, review, recovery, and local commits |
 | [Tools and workflows](docs/TOOL_SURFACE.md) | What each tool group enables and when ChatGPT uses it |
 | [Security model](docs/SECURITY.md) | What is protected, what leaves your machine, and what remains your responsibility |
+| [Host Breakglass / RDC fallback](docs/HOST_BREAKGLASS.md) | Separate opt-in operator recovery server with host, Git, and Windows capabilities |
 | [Error reference](docs/ERRORS.md) | Stable error codes and what they mean |
 | [External-agent protocol](docs/DELEGATION_ARTIFACTS.md) | Advanced review workflow when you separately operate an implementation agent |
 | [Migration guide](docs/MIGRATION.md) | Moving from 0.1.x to 0.2.0 |

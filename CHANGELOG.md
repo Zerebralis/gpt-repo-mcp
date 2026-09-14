@@ -2,6 +2,13 @@
 
 All notable public changes to GPT Repo MCP are documented here.
 
+## Unreleased
+
+### Added
+
+- Added a separate, opt-in `gpt-repo-host-breakglass` operator server for independent host recovery. It has its own configuration, transport, lifecycle, audit boundary, filesystem/shell/process/Git/Windows tools, and does not change the normal Repo MCP tool surface.
+- Added OpenAI Secure MCP Tunnel integration, transport diagnostics, supervisor/autostart helpers, and an MCP smoke that exercises temporary Git push and Windows recovery operations.
+
 ## [0.2.0] - 2026-07-31
 
 ### Added
