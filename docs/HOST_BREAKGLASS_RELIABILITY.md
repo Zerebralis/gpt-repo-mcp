@@ -111,6 +111,16 @@ When Host Breakglass becomes unreliable, use this order instead of immediately r
 - Tunnel IDs, Runtime API keys, and other credentials must never be copied into tracked diagnostics or Brain notes.
 - A watchdog recycle is a recovery mechanism. Repeated recycling is evidence of an unresolved upstream/local transport problem and should be investigated rather than hidden.
 
+## Live acceptance — 2026-09-16
+
+Breakglass-v2 was live-accepted on branch `feat/host-breakglass-tool-harvest-v2` at commit `b7108cf20dc7bac081716aebd95fe38e7fa6f0d4` over the production connector path `ChatGPT -> OpenAI Gateway -> Secure MCP Tunnel -> Host Breakglass`.
+
+The live surface reported 39 tools. The P0 acceptance matrix passed, including the new structured diagnostics and change-pack dry-run path. `host_apply_changes` was used only with `dry_run=true`; its expected-missing temporary target remained absent afterward. The connector was in Safe Mode with `full_host_access=false`. The control-plane poll heartbeat was fresh, and the stable supervisor/launcher/server/tunnel process identities showed no restart loop during acceptance.
+
+Session telemetry must be interpreted as load evidence rather than a single health score. During the formal acceptance run the pool reached 93/100 active sessions with 77 reclaimable under pressure. In the immediate closure follow-up it reached 100/100, but roughly 78–87 sessions remained reclaimable, reservations remained zero, in-flight work stayed low, and new requests continued to be admitted. The oldest idle cohort moved downward as calls continued, consistent with pressure reclamation removing eligible idle sessions on demand. This is not the earlier hard-saturation signature by itself; recurring admission failures or `session capacity reached` diagnostics would be the stronger failure evidence.
+
+No credentials, tunnel IDs, tokens, or other secret material are recorded in this acceptance note.
+
 ## Verification evidence
 
 For the poll-liveness hardening, verification included:
@@ -121,5 +131,7 @@ For the poll-liveness hardening, verification included:
 - the existing readiness-watchdog tests;
 - session-store and Host Breakglass policy regression tests;
 - lint, TypeScript typecheck, build, public-hygiene check, and `git diff --check`.
+
+For the v2 tool-harvest acceptance on 2026-09-16, the live connector path additionally verified the 39-tool surface, structured read/diagnostic tools, Safe Mode boundaries, fresh control-plane polling, stable process identities, and a non-mutating `host_apply_changes` dry run.
 
 Keep this document as the first reference when future Breakglass incidents resemble 502, 404, or `tunnel_client_not_seen` failures.

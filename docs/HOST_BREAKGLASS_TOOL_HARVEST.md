@@ -1,6 +1,6 @@
 # Host Breakglass Tool Harvest
 
-Status: 2026-09-15
+Status: 2026-09-16
 
 Host Breakglass stays a focused recovery connector. The goal is not unrestricted host authority; it is to replace brittle shell/GUI improvisation with bounded, structured tools harvested from patterns already proven in GPT Repo MCP, Chat On Steroids, AWA, and the Computer-Use adapter.
 
@@ -45,6 +45,26 @@ Host Breakglass stays a focused recovery connector. The goal is not unrestricted
 - `host_window_observe`: one-call window metadata + accessibility tree + optional screenshot through the existing loopback Computer-Use adapter.
 
 The Host Breakglass MCP surface is now 39 tools.
+
+## Live acceptance — 2026-09-16
+
+The v2 tool harvest was accepted live on branch `feat/host-breakglass-tool-harvest-v2` at commit `b7108cf20dc7bac081716aebd95fe38e7fa6f0d4` through the real path:
+
+`ChatGPT -> OpenAI Gateway -> Secure MCP Tunnel -> Host Breakglass`
+
+Acceptance evidence:
+
+- the live MCP surface reported exactly **39 tools**;
+- the new P0 harvest acceptance matrix passed, including multi-file reads, file hashing, process detail/tree inspection, network listeners, Scheduled Task inspection, Event Log reads, loopback HTTP probing, and batched diagnostics;
+- `host_apply_changes` was exercised only with `dry_run=true` against an expected-missing harmless temporary target; the plan was produced and no file was created;
+- the connector was running in **Safe Mode** with `full_host_access=false`;
+- the control-plane poll heartbeat was fresh at acceptance time;
+- the supervisor/launcher/server/tunnel identities were stable with no restart loop observed;
+- during the formal acceptance run the session pool reached **93/100 active** with **77 reclaimable under pressure**. This is a point-in-time load observation, not by itself a health verdict.
+
+A closure follow-up immediately afterward observed the pool at 100/100 while roughly 78–87 sessions remained reclaimable, reservations stayed at zero, in-flight work stayed low, and new connector calls continued to succeed. That pattern is consistent with pressure reclamation preserving admission under sustained session churn; persistent high occupancy should still be monitored rather than treated as a target state.
+
+No tunnel IDs, tokens, API keys, or other credentials are part of this acceptance record.
 
 ## P1 — next harvest candidates
 
