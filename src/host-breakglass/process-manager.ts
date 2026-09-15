@@ -50,7 +50,7 @@ export class HostProcessManager {
       env: minimalHostEnv(input.env),
       shell: false,
       windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"]
     });
     const jobId = randomUUID();
     const job: ManagedProcess = {
@@ -104,6 +104,26 @@ export class HostProcessManager {
 
   output(jobId: string): HostManagedProcessView {
     const job = this.require(jobId);
+    return this.view(job);
+  }
+
+  async input(jobId: string, chars: string, end = false): Promise<HostManagedProcessView> {
+    const job = this.require(jobId);
+    if (job.status !== "running") throw new Error(`Managed job is not running: ${jobId}`);
+    const stdin = job.child.stdin;
+    if (!stdin || stdin.destroyed || !stdin.writable) throw new Error(`Managed job stdin is not writable: ${jobId}`);
+    if (chars.length > 100_000) throw new Error("Managed process input exceeds 100000 characters.");
+    if (chars) {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => { cleanup(); reject(error); };
+        const onDrain = () => { cleanup(); resolve(); };
+        const cleanup = () => { stdin.off("error", onError); stdin.off("drain", onDrain); };
+        stdin.once("error", onError);
+        const accepted = stdin.write(chars, "utf8");
+        if (accepted) { cleanup(); resolve(); } else stdin.once("drain", onDrain);
+      });
+    }
+    if (end) stdin.end();
     return this.view(job);
   }
 

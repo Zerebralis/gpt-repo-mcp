@@ -4,7 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { HostBreakglassConfigSchema } from "../src/host-breakglass/config.js";
 import { createHostBreakglassContext } from "../src/host-breakglass/context.js";
-import { hostKillSystemProcess, protectedBreakglassRole } from "../src/host-breakglass/windows.js";
+import { hostKillSystemProcess, hostSystemProcessDetail, hostSystemProcessTree, protectedBreakglassRole } from "../src/host-breakglass/windows.js";
 
 const windowsIt = process.platform === "win32" ? it : it.skip;
 const cleanupPids = new Set<number>();
@@ -151,6 +151,31 @@ describe("Host Breakglass Windows process termination", () => {
     await waitForState(childPid, false);
   });
 
+  windowsIt("binds process termination to the observed process identity when requested", async () => {
+    const context = testContext();
+    const fixture = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 60000)"], { stdio: "ignore", windowsHide: true });
+    if (!fixture.pid) throw new Error("Identity fixture did not receive a PID.");
+    cleanupPids.add(fixture.pid);
+
+    const observed = await hostSystemProcessDetail(context, fixture.pid);
+    expect(observed.IdentitySha256).toMatch(/^[a-f0-9]{64}$/);
+    await expect(hostKillSystemProcess(context, { pid: fixture.pid, expected_identity_sha256: "0".repeat(64) })).rejects.toThrow(/identity changed/i);
+    expect(isAlive(fixture.pid)).toBe(true);
+
+    await hostKillSystemProcess(context, { pid: fixture.pid, expected_identity_sha256: observed.IdentitySha256 });
+    await waitForState(fixture.pid, false);
+  });
+
+  windowsIt("returns a bounded descendant tree with identity hashes", async () => {
+    const context = testContext();
+    const { parent, childPid } = await spawnParentWithChild();
+    const parentPid = parent.pid!;
+
+    const tree = await hostSystemProcessTree(context, parentPid);
+    expect(tree.processes.some((entry) => entry.ProcessId === parentPid)).toBe(true);
+    expect(tree.processes.some((entry) => entry.ProcessId === childPid)).toBe(true);
+    expect(tree.processes.every((entry) => /^[a-f0-9]{64}$/.test(entry.IdentitySha256))).toBe(true);
+  });
   windowsIt("refuses direct termination of a protected Host Breakglass component", async () => {
     const context = testContext();
     const marker = "C:\\Tools\\gpt-repo-mcp\\scripts\\host-breakglass-supervisor.mjs";

@@ -75,6 +75,11 @@ export const HostBreakglassConfigSchema = z.object({
   }).strict().default({
     allowlist: []
   }),
+  scheduled_tasks: z.object({
+    allowlist: z.array(z.string().min(1)).default([])
+  }).strict().default({
+    allowlist: []
+  }),
   computer_use: z.object({
     enabled: z.boolean().default(false),
     server_url: LoopbackMcpUrlSchema.default("http://127.0.0.1:3107/mcp"),

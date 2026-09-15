@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import os from "node:os";
 import { runProcessWithTail } from "../services/process-exec.js";
 import type { HostBreakglassContext } from "./context.js";
@@ -14,6 +15,7 @@ type WindowsProcessDetails = {
   Name?: string | null;
   ExecutablePath?: string | null;
   CommandLine?: string | null;
+  CreationDate?: string | null;
 };
 
 const PROTECTED_BREAKGLASS_COMMAND_MARKERS = [
@@ -53,10 +55,112 @@ export async function hostSystemProcesses(context: HostBreakglassContext) {
     managed_jobs: context.processes.list()
   };
 }
+export async function hostSystemProcessDetail(context: HostBreakglassContext, pid: number) {
+  ensureWindows();
+  const details = await processDetails(context, pid);
+  if (!details) throw new Error(`Process not found: ${pid}`);
+  return { ...details, IdentitySha256: processIdentitySha256(details), ProtectedRole: protectedBreakglassRole(details) ?? null };
+}
+
+export async function hostSystemProcessTree(context: HostBreakglassContext, pid: number) {
+  ensureWindows();
+  const tree = await processTreeDetails(context, pid);
+  if (tree.length === 0) throw new Error(`Process tree root not found: ${pid}`);
+  return {
+    root_pid: pid,
+    processes: tree.map((details) => ({ ...details, IdentitySha256: processIdentitySha256(details), ProtectedRole: protectedBreakglassRole(details) ?? null }))
+  };
+}
+
+export async function hostNetworkListeners(context: HostBreakglassContext) {
+  ensureWindows();
+  const script = [
+    "$tcp = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object @{n='Protocol';e={'TCP'}},LocalAddress,LocalPort,OwningProcess,State)",
+    "$udp = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | Select-Object @{n='Protocol';e={'UDP'}},LocalAddress,LocalPort,OwningProcess,@{n='State';e={'Listen'}})",
+    "@($tcp + $udp | Sort-Object Protocol,LocalPort,OwningProcess | Select-Object -First 1000) | ConvertTo-Json -Compress"
+  ].join("; ");
+  const result = await runPowerShellJson(context, script, 30_000);
+  return { listeners: asArray<Record<string, unknown>>(result), truncated: asArray<Record<string, unknown>>(result).length >= 1000 };
+}
+
+export async function hostPortOwner(context: HostBreakglassContext, input: { port: number; protocol?: "TCP" | "UDP" }) {
+  ensureWindows();
+  if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65535) throw new Error("Port must be 1-65535.");
+  const all = await hostNetworkListeners(context);
+  const matches = all.listeners.filter((entry) => Number(entry.LocalPort) === input.port && (!input.protocol || String(entry.Protocol).toUpperCase() === input.protocol));
+  const pids = [...new Set(matches.map((entry) => Number(entry.OwningProcess)).filter((pid) => Number.isInteger(pid) && pid > 0))];
+  const processes = [];
+  for (const pid of pids) {
+    const details = await processDetails(context, pid);
+    if (details) processes.push({ ...details, IdentitySha256: processIdentitySha256(details), ProtectedRole: protectedBreakglassRole(details) ?? null });
+  }
+  return { port: input.port, protocol: input.protocol ?? null, listeners: matches, processes };
+}
+
+export async function hostScheduledTaskList(context: HostBreakglassContext, input: { name_contains?: string; limit?: number } = {}) {
+  ensureWindows();
+  const needle = input.name_contains?.trim().toLowerCase();
+  const limit = Math.min(Math.max(1, input.limit ?? 250), 1000);
+  const script = [
+    "$tasks = @(Get-ScheduledTask -ErrorAction Stop | Select-Object TaskName,TaskPath,State,Author)",
+    "$tasks | ConvertTo-Json -Compress"
+  ].join("; ");
+  const raw = asArray<Record<string, unknown>>(await runPowerShellJson(context, script, 30_000));
+  const filtered = needle ? raw.filter((task) => `${task.TaskPath ?? ''}${task.TaskName ?? ''}`.toLowerCase().includes(needle)) : raw;
+  return { tasks: filtered.slice(0, limit), total_matches: filtered.length, truncated: filtered.length > limit };
+}
+
+export async function hostScheduledTaskGet(context: HostBreakglassContext, input: { name: string; path?: string }) {
+  ensureWindows();
+  const fullName = normalizeTaskName(input.name, input.path);
+  const script = [
+    `$task = Get-ScheduledTask -TaskName ${psQuote(taskLeaf(fullName))} -TaskPath ${psQuote(taskPath(fullName))} -ErrorAction Stop`,
+    "$info = Get-ScheduledTaskInfo -TaskName $task.TaskName -TaskPath $task.TaskPath -ErrorAction SilentlyContinue",
+    "[pscustomobject]@{TaskName=$task.TaskName;TaskPath=$task.TaskPath;State=$task.State;Author=$task.Author;LastRunTime=$info.LastRunTime;LastTaskResult=$info.LastTaskResult;NextRunTime=$info.NextRunTime;NumberOfMissedRuns=$info.NumberOfMissedRuns;Actions=@($task.Actions | Select-Object Execute,Arguments,WorkingDirectory);Triggers=@($task.Triggers | Select-Object Enabled,StartBoundary,EndBoundary)} | ConvertTo-Json -Depth 5 -Compress"
+  ].join("; ");
+  return { task: await runPowerShellJson(context, script, 30_000), full_name: fullName };
+}
+
+export async function hostScheduledTaskControl(context: HostBreakglassContext, input: { action: "start" | "stop"; name: string; path?: string; approval?: string }) {
+  ensureWindows();
+  const fullName = normalizeTaskName(input.name, input.path);
+  const allowed = context.config.scheduled_tasks.allowlist.map((name) => name.toLowerCase()).includes(fullName.toLowerCase());
+  if (!allowed && !(context.config.mode === "full" && input.approval === "HOST_BREAKGLASS_FULL")) {
+    throw new Error("Scheduled task is not in the configured allowlist.");
+  }
+  const verb = input.action === "start" ? "/Run" : "/End";
+  const result = await runBounded(context, "schtasks.exe", [verb, "/TN", fullName], 30_000);
+  return { action: input.action, full_name: fullName, ...result };
+}
+
+export async function hostEventLogQuery(
+  context: HostBreakglassContext,
+  input: { log_name?: string; since_minutes?: number; max_events?: number; provider?: string; event_id?: number }
+) {
+  ensureWindows();
+  const logName = (input.log_name ?? "System").trim();
+  if (!/^[A-Za-z0-9 ._\\/()-]+$/.test(logName)) throw new Error("Unsafe event log name.");
+  const sinceMinutes = Math.min(Math.max(1, input.since_minutes ?? 60), 10_080);
+  const maxEvents = Math.min(Math.max(1, input.max_events ?? 50), 200);
+  const provider = input.provider?.trim();
+  if (provider && provider.length > 300) throw new Error("Provider name too long.");
+  const parts = [`LogName=${psQuote(logName)}`, `StartTime=(Get-Date).AddMinutes(-${sinceMinutes})`];
+  if (provider) parts.push(`ProviderName=${psQuote(provider)}`);
+  if (input.event_id !== undefined) {
+    if (!Number.isInteger(input.event_id) || input.event_id < 0 || input.event_id > 65535) throw new Error("event_id must be 0-65535.");
+    parts.push(`Id=${input.event_id}`);
+  }
+  const script = [
+    `$filter = @{${parts.join(';')}}`,
+    `@(Get-WinEvent -FilterHashtable $filter -MaxEvents ${maxEvents} -ErrorAction SilentlyContinue | Select-Object TimeCreated,Id,LevelDisplayName,ProviderName,MachineName,Message) | ConvertTo-Json -Compress`
+  ].join("; ");
+  const events = asArray<Record<string, unknown>>(await runPowerShellJson(context, script, 30_000));
+  return { log_name: logName, since_minutes: sinceMinutes, events };
+}
 
 export async function hostKillSystemProcess(
   context: HostBreakglassContext,
-  input: { pid: number; tree?: boolean; approval?: string }
+  input: { pid: number; tree?: boolean; expected_identity_sha256?: string; approval?: string }
 ) {
   ensureWindows();
   if (!Number.isInteger(input.pid) || input.pid <= 4 || input.pid === process.pid) {
@@ -64,6 +168,13 @@ export async function hostKillSystemProcess(
   }
 
   const target = await processDetails(context, input.pid);
+  if (input.expected_identity_sha256) {
+    if (!target) throw new Error(`Process not found while checking identity: ${input.pid}`);
+    const actualIdentity = processIdentitySha256(target);
+    if (actualIdentity.toLowerCase() !== input.expected_identity_sha256.toLowerCase()) {
+      throw new Error(`Process identity changed. expected_identity_sha256=${input.expected_identity_sha256} actual_identity_sha256=${actualIdentity}`);
+    }
+  }
   const name = target?.Name ?? undefined;
   const protectedName = name ? PROTECTED_PROCESS_NAMES.has(name.toLowerCase()) : false;
   if (protectedName && !(context.config.mode === "full" && input.approval === "HOST_BREAKGLASS_FULL")) {
@@ -147,7 +258,7 @@ export async function hostServiceControl(
 async function processDetails(context: HostBreakglassContext, pid: number): Promise<WindowsProcessDetails | undefined> {
   const script = [
     `$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction SilentlyContinue`,
-    "if ($null -ne $p) { $p | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Compress }"
+    "if ($null -ne $p) { $p | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,CreationDate | ConvertTo-Json -Compress }"
   ].join("; ");
   const result = await runBounded(
     context,
@@ -161,7 +272,7 @@ async function processDetails(context: HostBreakglassContext, pid: number): Prom
 
 async function processTreeDetails(context: HostBreakglassContext, pid: number): Promise<WindowsProcessDetails[]> {
   const script = [
-    "$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine)",
+    "$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,CreationDate)",
     "$ids = [System.Collections.Generic.HashSet[int]]::new()",
     `[void]$ids.Add(${pid})`,
     "do { $added = $false; foreach ($p in $all) { if (-not $ids.Contains([int]$p.ProcessId) -and $ids.Contains([int]$p.ParentProcessId)) { [void]$ids.Add([int]$p.ProcessId); $added = $true } } } while ($added)",
@@ -188,7 +299,8 @@ function normalizeProcessDetails(value: WindowsProcessDetails): WindowsProcessDe
     ParentProcessId: Number(value.ParentProcessId),
     Name: value.Name ?? null,
     ExecutablePath: value.ExecutablePath ?? null,
-    CommandLine: value.CommandLine ?? null
+    CommandLine: value.CommandLine ?? null,
+    CreationDate: value.CreationDate ?? null
   };
 }
 
@@ -250,6 +362,43 @@ function validateRegistryKey(key: string): void {
   if (!key.trim() || key.includes("\n") || key.includes("\r")) throw new Error("Unsafe registry key.");
   normalizeHive(key);
 }
+function processIdentitySha256(details: WindowsProcessDetails): string {
+  return createHash("sha256").update(JSON.stringify({
+    pid: details.ProcessId,
+    parent_pid: details.ParentProcessId,
+    name: details.Name ?? null,
+    executable_path: details.ExecutablePath ?? null,
+    command_line: details.CommandLine ?? null,
+    creation_date: details.CreationDate ?? null
+  }), "utf8").digest("hex");
+}
+
+async function runPowerShellJson(context: HostBreakglassContext, script: string, timeoutMs: number): Promise<unknown> {
+  const result = await runBounded(context, "powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], timeoutMs);
+  if (result.exit_code !== 0) throw new Error(`PowerShell diagnostic failed: ${result.stderr_tail || `exit ${result.exit_code}`}`);
+  const text = result.stdout_tail.trim();
+  if (!text) return [];
+  return JSON.parse(text) as unknown;
+}
+
+function asArray<T>(value: unknown): T[] {
+  if (value === null || value === undefined || value === "") return [];
+  return (Array.isArray(value) ? value : [value]) as T[];
+}
+
+function normalizeTaskName(name: string, path?: string): string {
+  const cleanName = name.trim().replace(/^\\+/, "");
+  if (!cleanName || cleanName.includes("\n") || cleanName.includes("\r")) throw new Error("Unsafe scheduled task name.");
+  const cleanPath = (path ?? "\\").trim().replace(/\//g, "\\");
+  const rooted = cleanPath.startsWith("\\") ? cleanPath : `\\${cleanPath}`;
+  const normalizedPath = rooted.endsWith("\\") ? rooted : `${rooted}\\`;
+  const fullName = `${normalizedPath}${cleanName}`;
+  if (fullName.length > 512 || /[\r\n]/.test(fullName)) throw new Error("Unsafe scheduled task path.");
+  return fullName;
+}
+function taskLeaf(fullName: string): string { return fullName.slice(fullName.lastIndexOf("\\") + 1); }
+function taskPath(fullName: string): string { const index = fullName.lastIndexOf("\\"); return fullName.slice(0, index + 1) || "\\"; }
+function psQuote(value: string): string { return `'${value.replaceAll("'", "''")}'`; }
 
 async function runBounded(
   context: HostBreakglassContext,

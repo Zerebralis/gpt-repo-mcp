@@ -43,6 +43,9 @@
   "services": {
     "allowlist": []
   },
+  "scheduled_tasks": {
+    "allowlist": []
+  },
   "computer_use": {
     "enabled": false,
     "server_url": "http://127.0.0.1:3107/mcp"

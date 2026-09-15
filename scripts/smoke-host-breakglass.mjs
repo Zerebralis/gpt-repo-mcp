@@ -1,4 +1,4 @@
-﻿/* global process, console, setTimeout, URL, fetch, AbortSignal */
+/* global process, console, setTimeout, URL, fetch, AbortSignal */
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -28,7 +28,8 @@ try {
     audit_path: auditPath,
     git: { allow_push: true, allow_merge: true, allowed_remotes: ["origin"] },
     registry: { write_hives: ["HKCU"] },
-    services: { allowlist: [] }
+    services: { allowlist: [] },
+    scheduled_tasks: { allowlist: [] }
   }), "utf8");
 
   initGit(root);
@@ -55,8 +56,8 @@ try {
 
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
-  assert(names.length === 23, `expected 23 tools, got ${names.length}: ${names.join(", ")}`);
-  for (const required of ["host_read_file", "host_write_file", "host_edit_file", "host_shell", "host_process_start", "host_git", "host_system_info", "host_computer_use_catalog", "host_computer_use_call"]) {
+  assert(names.length === 39, `expected 39 tools, got ${names.length}: ${names.join(", ")}`);
+  for (const required of ["host_read_file", "host_read_many", "host_file_hash", "host_write_file", "host_edit_file", "host_apply_changes", "host_shell", "host_process_start", "host_process_input", "host_git", "host_system_info", "host_system_process_detail", "host_network_listeners", "host_port_owner", "host_task_list", "host_eventlog_query", "host_http_probe", "host_diagnostics_batch", "host_window_observe", "host_computer_use_catalog", "host_computer_use_call"]) {
     assert(names.includes(required), `missing tool ${required}`);
   }
 
@@ -68,6 +69,25 @@ try {
   expectOk(await call("host_edit_file", { path: file, old_text: "alpha", new_text: "beta" }));
   const readBeta = expectOk(await call("host_read_file", { path: file }));
   assert(readBeta.result.content === "beta", "host_edit_file did not produce beta");
+
+  const many = expectOk(await call("host_read_many", { files: [{ path: file }, { path: configPath }], max_total_bytes: 32_768 }));
+  assert(many.result.returned_files === 2, "host_read_many did not return both files");
+  const hashed = expectOk(await call("host_file_hash", { path: file }));
+  assert(/^[a-f0-9]{64}$/i.test(hashed.result.hash), "host_file_hash did not return SHA-256");
+  const packFile = join(root, "pack.txt");
+  const packPreview = expectOk(await call("host_apply_changes", { dry_run: true, changes: [{ type: "write", path: packFile, content: "PACK_OK", expected_missing: true }] }));
+  assert(packPreview.result.dry_run === true, "host_apply_changes dry-run not reported");
+  expectOk(await call("host_apply_changes", { changes: [{ type: "write", path: packFile, content: "PACK_OK", expected_missing: true }] }));
+  assert(expectOk(await call("host_read_file", { path: packFile })).result.content === "PACK_OK", "host_apply_changes did not apply pack");
+  const healthProbe = expectOk(await call("host_http_probe", { url: `http://127.0.0.1:${port}/health`, max_body_bytes: 4096 }));
+  assert(healthProbe.result.status === 200, "host_http_probe did not reach isolated health endpoint");
+  const batch = expectOk(await call("host_diagnostics_batch", { operations: [
+    { tool: "system_info", args: {} },
+    { tool: "stat", args: { path: file } },
+    { tool: "file_hash", args: { path: file } },
+    { tool: "http_probe", args: { url: `http://127.0.0.1:${port}/health`, method: "HEAD" } }
+  ] }));
+  assert(batch.result.failed === 0 && batch.result.succeeded === 4, `host_diagnostics_batch failure: ${JSON.stringify(batch.result)}`);
 
   const shell = expectOk(await call("host_shell", {
     cwd: root,
@@ -95,6 +115,21 @@ try {
   }
   assert(job?.stdout_tail.includes("JOB_OK"), `managed job missing JOB_OK: ${JSON.stringify(job)}`);
 
+  const interactive = expectOk(await call("host_process_start", {
+    executable: process.execPath,
+    args: ["-e", "process.stdin.setEncoding('utf8'); process.stdin.once('data', d => { process.stdout.write('INPUT_OK:'+d.trim()); process.exit(0); });"],
+    cwd: root,
+    timeout_ms: 5_000
+  }));
+  expectOk(await call("host_process_input", { job_id: interactive.result.job_id, chars: "hello\n", end: true }));
+  let interactiveJob;
+  for (let i = 0; i < 40; i += 1) {
+    interactiveJob = expectOk(await call("host_process_output", { job_id: interactive.result.job_id })).result;
+    if (interactiveJob.status !== "running") break;
+    await delay(50);
+  }
+  assert(interactiveJob?.stdout_tail.includes("INPUT_OK:hello"), `managed process input failed: ${JSON.stringify(interactiveJob)}`);
+
   const tracked = join(root, "tracked.txt");
   expectOk(await call("host_write_file", { path: tracked, content: "tracked-v1\n" }));
   expectOk(await call("host_git", { cwd: root, operation: "add", paths: ["tracked.txt"] }));
@@ -117,8 +152,18 @@ try {
   assert(typeof systemInfo.result.node === "string", "system info missing node runtime");
 
   if (process.platform === "win32") {
+    const selfDetail = expectOk(await call("host_system_process_detail", { pid: process.pid }));
+    assert(/^[a-f0-9]{64}$/i.test(selfDetail.result.IdentitySha256), "process detail missing identity hash");
     const systemProcesses = expectOk(await call("host_system_processes", {}));
     assert(systemProcesses.result.processes_csv.length > 0, "system process list is empty");
+    const listeners = expectOk(await call("host_network_listeners", {}));
+    assert(Array.isArray(listeners.result.listeners), "network listeners did not return an array");
+    const owner = expectOk(await call("host_port_owner", { port }));
+    assert(owner.result.listeners.length >= 1, "port owner did not find isolated Breakglass server");
+    const tasks = expectOk(await call("host_task_list", { name_contains: "GPT Host Breakglass", limit: 20 }));
+    assert(Array.isArray(tasks.result.tasks), "scheduled task list did not return an array");
+    const events = expectOk(await call("host_eventlog_query", { log_name: "System", since_minutes: 60, max_events: 3 }));
+    assert(Array.isArray(events.result.events), "event log query did not return an array");
     const services = expectOk(await call("host_service_list", {}));
     assert(services.result.stdout_tail.length > 0, "service list is empty");
 
@@ -130,7 +175,8 @@ try {
     victim = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
     await delay(100);
     const victimPid = victim.pid;
-    expectOk(await call("host_system_process_kill", { pid: victimPid }));
+    const victimIdentity = expectOk(await call("host_system_process_detail", { pid: victimPid })).result.IdentitySha256;
+    expectOk(await call("host_system_process_kill", { pid: victimPid, expected_identity_sha256: victimIdentity }));
     let victimAlive = true;
     for (let i = 0; i < 40; i += 1) {
       victimAlive = isWindowsProcessAlive(victimPid);
@@ -141,7 +187,7 @@ try {
     victim = undefined;
   }
 
-  console.log("Host breakglass built MCP smoke PASS (tools/files/shell/process/git-push/windows/registry/services/root-policy/safe-policy).\n");
+  console.log("Host breakglass built MCP smoke PASS (39 tools/files/change-pack/process-input/git/windows/network/tasks/eventlog/http/registry/services/root-policy/safe-policy).\n");
 
   async function call(name, args) {
     return client.callTool({ name, arguments: args });
@@ -193,7 +239,7 @@ async function waitForHealth(processHandle, portNumber, readOutput) {
       const response = await fetch(`http://127.0.0.1:${portNumber}/health`, { signal: AbortSignal.timeout(400) });
       if (response.ok) {
         const body = await response.json();
-        assert(body?.ok === true && body?.name === "gpt-repo-host-breakglass" && body?.tool_count === 23, `bad health: ${JSON.stringify(body)}`);
+        assert(body?.ok === true && body?.name === "gpt-repo-host-breakglass" && body?.tool_count === 39, `bad health: ${JSON.stringify(body)}`);
         return;
       }
     } catch {

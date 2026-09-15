@@ -21,6 +21,7 @@ control and only with roots and Windows capabilities you intend to expose.
   processes.
 - Registry writes are limited to configured hives in safe mode.
 - Service mutation is limited to an allowlist in safe mode.
+- Scheduled Task mutation is limited to an explicit allowlist in safe mode.
 - Full mode requires `full_host_access: true`; guarded operations additionally
   require the exact `HOST_BREAKGLASS_FULL` approval value.
 - Audit records use hashes and bounded metadata rather than command or output
@@ -36,7 +37,7 @@ they can perform the task.
 
 ## Tool Surface
 
-The host server currently exposes 23 tools:
+The host server currently exposes 39 tools:
 
 - roots and filesystem: list roots, stat, read, write, exact edit, directory
   listing, and bounded search;
@@ -46,12 +47,24 @@ The host server currently exposes 23 tools:
 - Windows: system information, process listing and guarded process termination,
   registry read/write, and service list/start/stop;
 - GUI adapter: an allowed Computer-Use catalog plus a raw MCP call proxy that
-  preserves downstream image content.
+  preserves downstream image content;
+- harvested diagnostics: multi-file reads, streaming hashes, process detail/tree
+  with identity guards, network listeners/port ownership, Scheduled Tasks,
+  Windows Event Log queries, loopback HTTP probes, and batched diagnostics;
+- safer recovery mutation: line-oriented managed-process stdin plus guarded
+  multi-file text change packs with dry-run, stale hashes, and automatic rollback
+  on partial apply failure;
+- unified GUI observation: one-call window metadata, accessibility tree, and
+  optional screenshot through the existing Computer-Use adapter.
 
 Git push is disabled unless `git.allow_push` is enabled. Only configured remote
 names are accepted. Push and other mutating Git calls can be bound to an
 `expected_head` to reject stale state.
 
+The harvest roadmap and the provenance of these patterns are recorded in
+[HOST_BREAKGLASS_TOOL_HARVEST.md](HOST_BREAKGLASS_TOOL_HARVEST.md). Full PTY
+sessions and restart-safe explicit rollback remain follow-up work rather than
+being approximated as stronger guarantees than the current implementation.
 ## Bootstrap Installers
 
 The external runtime dependencies can be restored from a clean Windows host
