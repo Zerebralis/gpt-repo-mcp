@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import net from "node:net";
+import { probeTunnelPollHealth } from "./tunnel-poll-health.mjs";
 
 const coreOnly = process.argv.includes("--core-only");
 const stateDir = process.env.GPT_HOST_BREAKGLASS_STATE_DIR ?? join(process.env.LOCALAPPDATA ?? process.cwd(), "gpt-repo-host-breakglass");
@@ -14,6 +15,8 @@ const port = Number(process.env.GPT_HOST_BREAKGLASS_PORT ?? envValues.GPT_HOST_B
 const tunnelClient = process.env.GPT_HOST_BREAKGLASS_TUNNEL_CLIENT_BIN
   ?? envValues.GPT_HOST_BREAKGLASS_TUNNEL_CLIENT_BIN
   ?? "C:\\Tools\\openai-tunnel-client\\v0.0.14\\tunnel-client.exe";
+const tunnelPollStaleMs = Number(process.env.GPT_HOST_BREAKGLASS_TUNNEL_POLL_STALE_MS ?? envValues.GPT_HOST_BREAKGLASS_TUNNEL_POLL_STALE_MS ?? 180000);
+const tunnelHealthUrlFile = join(stateDir, "openai-tunnel-health.url");
 const report = { ok: true, core_ok: true, gui_ready: true, transport_ready: true, config: configPath, checks: [] };
 let hostConfig;
 
@@ -81,6 +84,24 @@ try {
   check("transport", "tunnel_client", version.status === 0, version.status === 0 ? version.stdout.trim() : "binary present but version check failed");
 } catch {
   check("transport", "tunnel_client", false, "missing");
+}
+let tunnelHealthBase = null;
+try {
+  tunnelHealthBase = (await readFile(tunnelHealthUrlFile, "utf8")).trim();
+} catch (error) {
+  const missing = error && typeof error === "object" && "code" in error && error.code === "ENOENT";
+  check("transport", "control_plane_poll", missing, missing ? "live tunnel not observed" : (error instanceof Error ? error.message : String(error)));
+}
+if (tunnelHealthBase !== null) {
+  try {
+    const poll = await probeTunnelPollHealth(tunnelHealthBase, { staleMs: tunnelPollStaleMs, timeoutMs: 2_000 });
+    const detail = poll.lastSuccessUnixSeconds > 0
+      ? `${poll.status}; last_success=${new Date(poll.lastSuccessUnixSeconds * 1000).toISOString()}; age_ms=${poll.ageMs}`
+      : poll.status;
+    check("transport", "control_plane_poll", poll.fresh, detail);
+  } catch (error) {
+    check("transport", "control_plane_poll", false, error instanceof Error ? error.message : String(error));
+  }
 }
 try {
   const response = await fetch("https://api.openai.com/", { method: "HEAD", signal: AbortSignal.timeout(4_000) });

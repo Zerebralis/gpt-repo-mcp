@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { createReadinessWatchdog } from "./tunnel-readiness-watchdog.mjs";
+import { probeTunnelPollHealth } from "./tunnel-poll-health.mjs";
 
 const repoRoot = process.cwd();
 const stateDir = process.env.GPT_HOST_BREAKGLASS_STATE_DIR ?? join(process.env.LOCALAPPDATA ?? repoRoot, "gpt-repo-host-breakglass");
@@ -19,6 +20,8 @@ const tunnelClient = process.env.GPT_HOST_BREAKGLASS_TUNNEL_CLIENT_BIN?.trim()
   || "C:\\Tools\\openai-tunnel-client\\v0.0.14\\tunnel-client.exe";
 const tunnelId = required("CONTROL_PLANE_TUNNEL_ID");
 required("CONTROL_PLANE_API_KEY");
+const pollStartupTimeoutMs = boundedInt(process.env.GPT_HOST_BREAKGLASS_TUNNEL_POLL_STARTUP_TIMEOUT_MS ?? "90000", "GPT_HOST_BREAKGLASS_TUNNEL_POLL_STARTUP_TIMEOUT_MS", 10000, 600000);
+const pollStaleMs = boundedInt(process.env.GPT_HOST_BREAKGLASS_TUNNEL_POLL_STALE_MS ?? "180000", "GPT_HOST_BREAKGLASS_TUNNEL_POLL_STALE_MS", 60000, 900000);
 if (!/^tunnel_[a-zA-Z0-9_-]{8,}$/.test(tunnelId)) throw new Error("CONTROL_PLANE_TUNNEL_ID has an unexpected format.");
 
 await access(configPath, constants.R_OK);
@@ -66,19 +69,22 @@ const tunnel = track(spawn(tunnelClient, ["run"], {
 
 const healthBase = await waitForTunnelHealthFile(tunnel, healthUrlFile);
 await waitForTunnelReady(tunnel, healthBase);
+const initialPoll = await waitForSuccessfulControlPlanePoll(tunnel, healthBase, pollStartupTimeoutMs, pollStaleMs);
 const readinessWatchdog = createReadinessWatchdog({
   probe: async () => {
     try {
-      const response = await fetch(`${healthBase}/readyz`, { signal: AbortSignal.timeout(1500) });
-      return response.ok;
+      const ready = await fetch(`${healthBase}/readyz`, { signal: AbortSignal.timeout(1500) });
+      if (!ready.ok) return false;
+      const poll = await probeTunnelPollHealth(healthBase, { staleMs: pollStaleMs, timeoutMs: 2000 });
+      return poll.fresh;
     } catch { return false; }
   },
   intervalMs: 10000,
   failureThreshold: 3,
-  onFailure: (count) => console.error(`[tunnel-client] readiness probe failed (${count}/3).`),
-  onHealthy: (count) => console.log(`[tunnel-client] readiness restored after ${count} failed probe(s).`),
+  onFailure: (count) => console.error(`[tunnel-client] readiness/control-plane poll probe failed (${count}/3).`),
+  onHealthy: (count) => console.log(`[tunnel-client] readiness/control-plane polling restored after ${count} failed probe(s).`),
   onThreshold: () => {
-    console.error('[tunnel-client] readiness lost; cycling tunnel child.');
+    console.error('[tunnel-client] readiness or control-plane polling lost; cycling tunnel child.');
     tunnel.kill();
   }
 });
@@ -89,7 +95,9 @@ await writeFile(statePath, JSON.stringify({
   updated_at: new Date().toISOString(),
   local_port: port,
   mode: "openai-secure-tunnel",
-  health_base_url: healthBase
+  health_base_url: healthBase,
+  control_plane_poll_last_success_unix_seconds: initialPoll.lastSuccessUnixSeconds,
+  control_plane_poll_stale_after_ms: pollStaleMs
 }, null, 2), { encoding: "utf8", mode: 0o600 });
 console.log("Host breakglass OpenAI Secure MCP Tunnel ready.");
 console.log(`State written to ${statePath}. Tunnel ID and API key are intentionally not printed.`);
@@ -152,6 +160,23 @@ async function waitForTunnelReady(child, healthBase) {
     await delay(250);
   }
   throw new Error("tunnel-client health endpoint did not become ready.");
+}
+
+async function waitForSuccessfulControlPlanePoll(child, healthBase, timeoutMs, staleMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastDetail = "no successful control-plane poll observed";
+  while (Date.now() < deadline) {
+    assertChildAlive(child, "tunnel-client");
+    try {
+      const health = await probeTunnelPollHealth(healthBase, { staleMs, timeoutMs: 2000 });
+      if (health.fresh && health.lastSuccessUnixSeconds > 0) return health;
+      lastDetail = health.status;
+    } catch (error) {
+      lastDetail = error instanceof Error ? error.message : String(error);
+    }
+    await delay(1000);
+  }
+  throw new Error(`tunnel-client did not complete a successful control-plane poll before startup deadline: ${sanitize(lastDetail)}`);
 }
 
 function assertChildAlive(child, label) {
