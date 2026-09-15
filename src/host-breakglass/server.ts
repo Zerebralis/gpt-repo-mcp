@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { buildMcpRoutePatterns, isAuthorizedMcpPath } from "../runtime/mcp-routes.js";
 import { isAllowedBrowserOrigin } from "../runtime/network-boundary.js";
-import { TransportSessionStore, type SessionReservation } from "../runtime/transport-session-store.js";
+import { TransportSessionStore, type SessionLease, type SessionReservation } from "../runtime/transport-session-store.js";
 import { loadHostBreakglassConfig } from "./config.js";
 import { createHostBreakglassContext } from "./context.js";
 import { createHostBreakglassMcpServer } from "./register.js";
@@ -17,6 +17,7 @@ const configPath = resolve(process.env.GPT_HOST_BREAKGLASS_CONFIG ?? "config.hos
 const publicPathToken = process.env.GPT_HOST_BREAKGLASS_PUBLIC_PATH_TOKEN;
 const maxSessions = readBoundedInteger("GPT_HOST_BREAKGLASS_MAX_SESSIONS", 100, 1, 250);
 const sessionIdleTtlMs = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS", 10 * 60_000, 1_000, 24 * 60 * 60_000);
+const sessionPressureIdleTtlMs = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS", Math.min(60_000, sessionIdleTtlMs), 1_000, sessionIdleTtlMs);
 
 if (!isLoopback(host) && !publicPathToken) {
   throw new Error("External host-breakglass bind requires GPT_HOST_BREAKGLASS_PUBLIC_PATH_TOKEN.");
@@ -40,11 +41,12 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: "2mb" }));
 
-const transports = new TransportSessionStore<StreamableHTTPServerTransport>({ maxSessions, idleTtlMs: sessionIdleTtlMs });
+const transports = new TransportSessionStore<StreamableHTTPServerTransport>({ maxSessions, idleTtlMs: sessionIdleTtlMs, pressureIdleTtlMs: sessionPressureIdleTtlMs });
 const mcpRoutes = buildMcpRoutePatterns(publicPathToken);
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, name: "gpt-repo-host-breakglass", mode: config.mode, tool_count: HOST_BREAKGLASS_TOOL_COUNT, computer_use: config.computer_use.enabled, mcp_sessions: { active: transports.size, capacity: maxSessions, idle_ttl_ms: sessionIdleTtlMs } });
+  const stats = transports.stats();
+  res.json({ ok: true, name: "gpt-repo-host-breakglass", mode: config.mode, tool_count: HOST_BREAKGLASS_TOOL_COUNT, computer_use: config.computer_use.enabled, mcp_sessions: { ...stats, capacity: maxSessions, idle_ttl_ms: sessionIdleTtlMs, pressure_idle_ttl_ms: sessionPressureIdleTtlMs } });
 });
 
 function authorized(req: Request, res: Response): boolean {
@@ -58,8 +60,9 @@ app.post(mcpRoutes, async (req: Request, res: Response) => {
   const sessionId = req.headers["mcp-session-id"];
   let transport: StreamableHTTPServerTransport | undefined;
   let reservation: SessionReservation<StreamableHTTPServerTransport> | undefined;
+  let lease: SessionLease<StreamableHTTPServerTransport> | undefined;
   try {
-    if (typeof sessionId === "string") transport = transports.get(sessionId);
+    if (typeof sessionId === "string") { lease = transports.acquire(sessionId); transport = lease?.transport; }
     if (!transport && !sessionId && isInitializeRequest(req.body)) {
       reservation = await transports.reserve();
       if (!reservation) {
@@ -87,16 +90,19 @@ app.post(mcpRoutes, async (req: Request, res: Response) => {
     }
     await transport.handleRequest(req, res, req.body);
   } catch {
-    reservation?.release();
     if (transport?.sessionId) await transports.close(transport.sessionId).catch(() => undefined);
     if (!res.headersSent) res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "Internal server error" }, id: null });
+  } finally {
+    reservation?.release();
+    lease?.release();
   }
 });
 
 app.get(mcpRoutes, async (req: Request, res: Response) => {
   if (!authorized(req, res)) return;
   const sessionId = req.headers["mcp-session-id"];
-  const transport = typeof sessionId === "string" ? transports.get(sessionId) : undefined;
+  const lease = typeof sessionId === "string" ? transports.acquire(sessionId) : undefined;
+  const transport = lease?.transport;
   if (!transport) {
     res.status(400).send("Invalid or missing MCP session id");
     return;
@@ -105,13 +111,16 @@ app.get(mcpRoutes, async (req: Request, res: Response) => {
     await transport.handleRequest(req, res);
   } catch {
     if (!res.headersSent) res.status(500).send("Internal server error");
+  } finally {
+    lease?.release();
   }
 });
 
 app.delete(mcpRoutes, async (req: Request, res: Response) => {
   if (!authorized(req, res)) return;
   const sessionId = req.headers["mcp-session-id"];
-  const transport = typeof sessionId === "string" ? transports.get(sessionId) : undefined;
+  const lease = typeof sessionId === "string" ? transports.acquire(sessionId) : undefined;
+  const transport = lease?.transport;
   if (!transport || typeof sessionId !== "string") {
     res.status(400).send("Invalid or missing MCP session id");
     return;
@@ -121,6 +130,8 @@ app.delete(mcpRoutes, async (req: Request, res: Response) => {
     await transports.close(sessionId);
   } catch {
     if (!res.headersSent) res.status(500).send("Internal server error");
+  } finally {
+    lease?.release();
   }
 });
 

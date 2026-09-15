@@ -80,4 +80,48 @@ describe("TransportSessionStore", () => {
     expect(first.closeCalls).toBe(1);
     expect(second.closeCalls).toBe(1);
   });
+
+  test("reclaims old idle sessions when capacity is under pressure", async () => {
+    let now = 1_000;
+    const store = new TransportSessionStore<TestTransport>({ maxSessions: 1, idleTtlMs: 10_000, pressureIdleTtlMs: 100, now: () => now });
+    const stale = new TestTransport();
+    (await store.reserve())?.commit("stale", stale);
+    now = 1_101;
+    const replacement = await store.reserve();
+    expect(replacement).toBeDefined();
+    expect(stale.closeCalls).toBe(1);
+    expect(store.size).toBe(0);
+    replacement?.release();
+  });
+
+  test("never pressure-reclaims an in-flight session", async () => {
+    let now = 1_000;
+    const store = new TransportSessionStore<TestTransport>({ maxSessions: 1, idleTtlMs: 10_000, pressureIdleTtlMs: 100, now: () => now });
+    const busy = new TestTransport();
+    (await store.reserve())?.commit("busy", busy);
+    const lease = store.acquire("busy");
+    now = 1_500;
+    expect(await store.reserve()).toBeUndefined();
+    expect(busy.closeCalls).toBe(0);
+    lease?.release();
+    now = 1_601;
+    const replacement = await store.reserve();
+    expect(replacement).toBeDefined();
+    expect(busy.closeCalls).toBe(1);
+    replacement?.release();
+  });
+
+  test("does not hard-expire an in-flight session", async () => {
+    let now = 1_000;
+    const store = new TransportSessionStore<TestTransport>({ maxSessions: 1, idleTtlMs: 100, pressureIdleTtlMs: 50, now: () => now });
+    const busy = new TestTransport();
+    (await store.reserve())?.commit("busy", busy);
+    const lease = store.acquire("busy");
+    now = 1_500;
+    await expect(store.sweepExpired()).resolves.toEqual({ expired: 0, close_failures: 0 });
+    lease?.release();
+    now = 1_601;
+    await expect(store.sweepExpired()).resolves.toEqual({ expired: 1, close_failures: 0 });
+    expect(busy.closeCalls).toBe(1);
+  });
 });
