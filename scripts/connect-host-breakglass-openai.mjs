@@ -3,6 +3,7 @@ import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
+import { createReadinessWatchdog } from "./tunnel-readiness-watchdog.mjs";
 
 const repoRoot = process.cwd();
 const stateDir = process.env.GPT_HOST_BREAKGLASS_STATE_DIR ?? join(process.env.LOCALAPPDATA ?? repoRoot, "gpt-repo-host-breakglass");
@@ -65,6 +66,23 @@ const tunnel = track(spawn(tunnelClient, ["run"], {
 
 const healthBase = await waitForTunnelHealthFile(tunnel, healthUrlFile);
 await waitForTunnelReady(tunnel, healthBase);
+const readinessWatchdog = createReadinessWatchdog({
+  probe: async () => {
+    try {
+      const response = await fetch(`${healthBase}/readyz`, { signal: AbortSignal.timeout(1500) });
+      return response.ok;
+    } catch { return false; }
+  },
+  intervalMs: 10000,
+  failureThreshold: 3,
+  onFailure: (count) => console.error(`[tunnel-client] readiness probe failed (${count}/3).`),
+  onHealthy: (count) => console.log(`[tunnel-client] readiness restored after ${count} failed probe(s).`),
+  onThreshold: () => {
+    console.error('[tunnel-client] readiness lost; cycling tunnel child.');
+    tunnel.kill();
+  }
+});
+readinessWatchdog.start();
 await writeFile(statePath, JSON.stringify({
   ok: true,
   ready: true,
