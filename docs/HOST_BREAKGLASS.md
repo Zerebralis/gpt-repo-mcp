@@ -97,6 +97,8 @@ stored in Git.
 
 Known transport incidents, diagnostic signatures, and durable fixes are documented in [HOST_BREAKGLASS_RELIABILITY.md](HOST_BREAKGLASS_RELIABILITY.md). Check that runbook first when failures surface as 502, gateway 404, or `tunnel_client_not_seen`.
 
+Durable architectural choices and deliberately rejected/default-excluded approaches are recorded in [HOST_BREAKGLASS_DECISIONS.md](HOST_BREAKGLASS_DECISIONS.md). Use that log when deciding whether a proposed recovery feature belongs in the small independent Breakglass layer at all.
+
 ## MCP Session Resilience
 
 The Streamable HTTP server keeps a strict hard cap of 100 concurrent MCP sessions with a 10-minute normal idle TTL. Secure Tunnel churn can create fresh MCP sessions faster than clients delete old ones, so pressure handling uses a separate 60-second pressure idle TTL plus a soft headroom target. `GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET` defaults to 80% of `GPT_HOST_BREAKGLASS_MAX_SESSIONS` (80 with the default cap). When a new admission would exceed that soft target, only pressure-old, idle, non-in-flight sessions are reclaimed toward enough headroom for the admission. A periodic pressure sweep also trims eligible old idle sessions toward the soft target. Fresh sessions and in-flight sessions are never closed merely to satisfy the soft target; if they occupy the full hard cap, admission is rejected instead.
