@@ -22,16 +22,24 @@ host-breakglass MCP session capacity reached active=100 max=100
 
 ChatGPT Secure Tunnel workflows can create many short-lived MCP Streamable HTTP sessions. Under sustained parallel activity, idle sessions accumulated faster than the normal 10-minute idle TTL released them. Once all 100 slots were occupied, new MCP session initialization was rejected locally. The connector/gateway could then surface that local refusal as an upstream 502.
 
-### Durable fix
+### Durable fix and headroom hardening
 
-Commit `06be4f881e0ed9e0a8d4627d300477f1d1963fe3` added bounded pressure reclamation:
+Commit `06be4f881e0ed9e0a8d4627d300477f1d1963fe3` added the first bounded pressure reclamation:
 
 - the normal 10-minute idle TTL remains unchanged;
 - only idle, non-in-flight sessions are eligible for early reclamation under capacity pressure;
 - reservations that do not commit a session are released in `finally`;
 - aggregate session telemetry is exposed through `/health` without exposing session IDs.
 
-Do not "fix" this incident merely by increasing the pool limit. A larger pool only postpones exhaustion if lifecycle pressure is the underlying problem.
+The later session-headroom hardening addresses the sticky `100/100` pattern seen during sustained Secure Tunnel churn. The hard cap remains 100 and the pressure idle TTL remains 60 seconds by default, but pressure reclamation now has a configurable soft target. `GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET` defaults to 80% of the hard cap (80 sessions at the default cap).
+
+- admission pressure reclaims pressure-old, idle, non-in-flight sessions far enough toward the soft target to leave room for the pending admission;
+- the periodic cleanup loop also pressure-sweeps eligible sessions toward the soft target, so headroom can recover without waiting for the next admission;
+- fresh sessions and in-flight sessions are never closed merely to hit the soft target;
+- if recent or in-flight sessions fill the hard cap, the hard cap still wins and the new admission is rejected;
+- `/health` retains point-in-time pool telemetry and adds cumulative process-lifetime counters for committed sessions, normal expirations, pressure reclaims, and admission rejections.
+
+Do not "fix" this incident merely by increasing the pool limit. A larger pool only postpones exhaustion if lifecycle pressure is the underlying problem. Likewise, `active == capacity` is not sufficient by itself to prove a failure: distinguish a pool that is still reclaiming and admitting from one that is actually rejecting admissions.
 
 ## Failure mode B: tunnel is locally ready but invisible to the control plane
 

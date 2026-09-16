@@ -23,6 +23,7 @@ describe("TransportSessionStore", () => {
     second?.commit("second", new TestTransport());
     expect(store.size).toBe(2);
     expect(store.get("__proto__")).toBeInstanceOf(TestTransport);
+    expect(store.stats().cumulative).toEqual({ committed: 2, normal_expired: 0, pressure_reclaimed: 0, admission_rejected: 1 });
   });
 
   test("releasing a reservation returns its capacity", async () => {
@@ -55,6 +56,7 @@ describe("TransportSessionStore", () => {
     expect(store.get("active")).toBe(active);
     expect(idle.closeCalls).toBe(1);
     expect(active.closeCalls).toBe(0);
+    expect(store.stats().cumulative.normal_expired).toBe(1);
   });
 
   test("close removes one session and closes its transport exactly once", async () => {
@@ -81,34 +83,77 @@ describe("TransportSessionStore", () => {
     expect(second.closeCalls).toBe(1);
   });
 
-  test("reclaims old idle sessions when capacity is under pressure", async () => {
+  test("reclaims old idle sessions toward soft headroom on admission", async () => {
     let now = 1_000;
-    const store = new TransportSessionStore<TestTransport>({ maxSessions: 1, idleTtlMs: 10_000, pressureIdleTtlMs: 100, now: () => now });
-    const stale = new TestTransport();
-    (await store.reserve())?.commit("stale", stale);
+    const store = new TransportSessionStore<TestTransport>({ maxSessions: 5, idleTtlMs: 10_000, pressureIdleTtlMs: 100, pressureSoftTarget: 3, now: () => now });
+    const transports = Array.from({ length: 5 }, () => new TestTransport());
+    for (const [index, transport] of transports.entries()) (await store.reserve())?.commit(`stale-${index}`, transport);
+
     now = 1_101;
     const replacement = await store.reserve();
     expect(replacement).toBeDefined();
-    expect(stale.closeCalls).toBe(1);
-    expect(store.size).toBe(0);
-    replacement?.release();
+    expect(store.size).toBe(2);
+    expect(transports.filter((transport) => transport.closeCalls === 1)).toHaveLength(3);
+    replacement?.commit("replacement", new TestTransport());
+    expect(store.size).toBe(3);
+    expect(store.stats().cumulative).toMatchObject({ committed: 6, pressure_reclaimed: 3, admission_rejected: 0 });
   });
 
-  test("never pressure-reclaims an in-flight session", async () => {
+  test("defaults the pressure soft target to 80 percent of maxSessions", async () => {
     let now = 1_000;
-    const store = new TransportSessionStore<TestTransport>({ maxSessions: 1, idleTtlMs: 10_000, pressureIdleTtlMs: 100, now: () => now });
-    const busy = new TestTransport();
-    (await store.reserve())?.commit("busy", busy);
-    const lease = store.acquire("busy");
-    now = 1_500;
+    const store = new TransportSessionStore<TestTransport>({ maxSessions: 5, idleTtlMs: 10_000, pressureIdleTtlMs: 100, now: () => now });
+    const transports = Array.from({ length: 5 }, () => new TestTransport());
+    for (const [index, transport] of transports.entries()) (await store.reserve())?.commit(`default-${index}`, transport);
+
+    now = 1_101;
+    await expect(store.sweepPressure()).resolves.toEqual({ reclaimed: 1, close_failures: 0 });
+    expect(store.size).toBe(4);
+    expect(transports.filter((transport) => transport.closeCalls === 1)).toHaveLength(1);
+  });
+
+  test("periodic pressure sweep reclaims stale idle sessions toward the soft target", async () => {
+    let now = 1_000;
+    const store = new TransportSessionStore<TestTransport>({ maxSessions: 5, idleTtlMs: 10_000, pressureIdleTtlMs: 100, pressureSoftTarget: 3, now: () => now });
+    const transports = Array.from({ length: 5 }, () => new TestTransport());
+    for (const [index, transport] of transports.entries()) (await store.reserve())?.commit(`session-${index}`, transport);
+
+    now = 1_101;
+    await expect(store.sweepPressure()).resolves.toEqual({ reclaimed: 2, close_failures: 0 });
+    expect(store.size).toBe(3);
+    expect(transports.filter((transport) => transport.closeCalls === 1)).toHaveLength(2);
+    expect(store.stats().cumulative.pressure_reclaimed).toBe(2);
+  });
+
+  test("keeps recent sessions and rejects admission when they fill the hard cap", async () => {
+    let now = 1_000;
+    const store = new TransportSessionStore<TestTransport>({ maxSessions: 3, idleTtlMs: 10_000, pressureIdleTtlMs: 100, pressureSoftTarget: 2, now: () => now });
+    const transports = Array.from({ length: 3 }, () => new TestTransport());
+    for (const [index, transport] of transports.entries()) (await store.reserve())?.commit(`recent-${index}`, transport);
+
+    now = 1_050;
     expect(await store.reserve()).toBeUndefined();
-    expect(busy.closeCalls).toBe(0);
-    lease?.release();
-    now = 1_601;
+    expect(store.size).toBe(3);
+    expect(transports.every((transport) => transport.closeCalls === 0)).toBe(true);
+    expect(store.stats().cumulative.admission_rejected).toBe(1);
+  });
+
+  test("never pressure-reclaims an in-flight session while creating soft headroom", async () => {
+    let now = 1_000;
+    const store = new TransportSessionStore<TestTransport>({ maxSessions: 4, idleTtlMs: 10_000, pressureIdleTtlMs: 100, pressureSoftTarget: 2, now: () => now });
+    const busy = new TestTransport();
+    const idle = Array.from({ length: 3 }, () => new TestTransport());
+    (await store.reserve())?.commit("busy", busy);
+    for (const [index, transport] of idle.entries()) (await store.reserve())?.commit(`idle-${index}`, transport);
+    const lease = store.acquire("busy");
+
+    now = 1_101;
     const replacement = await store.reserve();
     expect(replacement).toBeDefined();
-    expect(busy.closeCalls).toBe(1);
+    expect(store.size).toBe(1);
+    expect(busy.closeCalls).toBe(0);
+    expect(idle.every((transport) => transport.closeCalls === 1)).toBe(true);
     replacement?.release();
+    lease?.release();
   });
 
   test("does not hard-expire an in-flight session", async () => {
@@ -119,6 +164,7 @@ describe("TransportSessionStore", () => {
     const lease = store.acquire("busy");
     now = 1_500;
     await expect(store.sweepExpired()).resolves.toEqual({ expired: 0, close_failures: 0 });
+    await expect(store.sweepPressure()).resolves.toEqual({ reclaimed: 0, close_failures: 0 });
     lease?.release();
     now = 1_601;
     await expect(store.sweepExpired()).resolves.toEqual({ expired: 1, close_failures: 0 });

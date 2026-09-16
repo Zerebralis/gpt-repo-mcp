@@ -99,7 +99,9 @@ Known transport incidents, diagnostic signatures, and durable fixes are document
 
 ## MCP Session Resilience
 
-The Streamable HTTP server defaults to 100 concurrent MCP sessions with a 10-minute idle TTL. This is intentionally more tolerant of ChatGPT Secure Tunnel workflows, which may create fresh MCP sessions across separate tool workflows instead of promptly deleting every prior session. Override with `GPT_HOST_BREAKGLASS_MAX_SESSIONS` and `GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS` when needed. `/health` exposes only aggregate session counts and limits for diagnostics; it never returns session IDs.
+The Streamable HTTP server keeps a strict hard cap of 100 concurrent MCP sessions with a 10-minute normal idle TTL. Secure Tunnel churn can create fresh MCP sessions faster than clients delete old ones, so pressure handling uses a separate 60-second pressure idle TTL plus a soft headroom target. `GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET` defaults to 80% of `GPT_HOST_BREAKGLASS_MAX_SESSIONS` (80 with the default cap). When a new admission would exceed that soft target, only pressure-old, idle, non-in-flight sessions are reclaimed toward enough headroom for the admission. A periodic pressure sweep also trims eligible old idle sessions toward the soft target. Fresh sessions and in-flight sessions are never closed merely to satisfy the soft target; if they occupy the full hard cap, admission is rejected instead.
+
+The hard cap, normal idle TTL, pressure idle TTL, and soft target can be configured with `GPT_HOST_BREAKGLASS_MAX_SESSIONS`, `GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS`, `GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS`, and `GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET`. `/health` exposes aggregate session state plus cumulative process-lifetime counters for committed sessions, normal expirations, pressure reclaims, and rejected admissions. It never returns session IDs.
 
 ## GUI / Computer-Use Adapter
 

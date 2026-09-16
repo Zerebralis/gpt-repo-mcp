@@ -18,6 +18,7 @@ const publicPathToken = process.env.GPT_HOST_BREAKGLASS_PUBLIC_PATH_TOKEN;
 const maxSessions = readBoundedInteger("GPT_HOST_BREAKGLASS_MAX_SESSIONS", 100, 1, 250);
 const sessionIdleTtlMs = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS", 10 * 60_000, 1_000, 24 * 60 * 60_000);
 const sessionPressureIdleTtlMs = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS", Math.min(60_000, sessionIdleTtlMs), 1_000, sessionIdleTtlMs);
+const sessionSoftTarget = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET", Math.max(1, Math.floor(maxSessions * 0.8)), 1, maxSessions);
 
 if (!isLoopback(host) && !publicPathToken) {
   throw new Error("External host-breakglass bind requires GPT_HOST_BREAKGLASS_PUBLIC_PATH_TOKEN.");
@@ -41,12 +42,12 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: "2mb" }));
 
-const transports = new TransportSessionStore<StreamableHTTPServerTransport>({ maxSessions, idleTtlMs: sessionIdleTtlMs, pressureIdleTtlMs: sessionPressureIdleTtlMs });
+const transports = new TransportSessionStore<StreamableHTTPServerTransport>({ maxSessions, idleTtlMs: sessionIdleTtlMs, pressureIdleTtlMs: sessionPressureIdleTtlMs, pressureSoftTarget: sessionSoftTarget });
 const mcpRoutes = buildMcpRoutePatterns(publicPathToken);
 
 app.get("/health", (_req, res) => {
   const stats = transports.stats();
-  res.json({ ok: true, name: "gpt-repo-host-breakglass", mode: config.mode, tool_count: HOST_BREAKGLASS_TOOL_COUNT, computer_use: config.computer_use.enabled, mcp_sessions: { ...stats, capacity: maxSessions, idle_ttl_ms: sessionIdleTtlMs, pressure_idle_ttl_ms: sessionPressureIdleTtlMs } });
+  res.json({ ok: true, name: "gpt-repo-host-breakglass", mode: config.mode, tool_count: HOST_BREAKGLASS_TOOL_COUNT, computer_use: config.computer_use.enabled, mcp_sessions: { ...stats, capacity: maxSessions, soft_target: sessionSoftTarget, idle_ttl_ms: sessionIdleTtlMs, pressure_idle_ttl_ms: sessionPressureIdleTtlMs } });
 });
 
 function authorized(req: Request, res: Response): boolean {
@@ -135,7 +136,12 @@ app.delete(mcpRoutes, async (req: Request, res: Response) => {
   }
 });
 
-const cleanup = setInterval(() => { void transports.sweepExpired(); }, Math.min(sessionIdleTtlMs, 60_000));
+const cleanup = setInterval(() => {
+  void (async () => {
+    await transports.sweepExpired();
+    await transports.sweepPressure();
+  })();
+}, Math.min(sessionPressureIdleTtlMs, 60_000));
 cleanup.unref();
 const httpServer = app.listen(port, host, () => {
   const path = publicPathToken ? "/t/[token]/mcp" : "/mcp";
