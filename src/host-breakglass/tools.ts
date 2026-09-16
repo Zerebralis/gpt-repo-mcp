@@ -10,7 +10,7 @@ import { hostFileHash, hostHttpProbe, hostReadMany } from "./diagnostics.js";
 import { hostListDirectory, hostReadFile, hostSearch, hostStat, hostWriteFile } from "./filesystem.js";
 import { hostGit } from "./git.js";
 import { assertShellCommandAllowed, minimalHostEnv } from "./shell-policy.js";
-import { shortHash } from "./audit.js";
+import { shortHash, type HostAuditEvent } from "./audit.js";
 import { hostEventLogQuery, hostKillSystemProcess, hostNetworkListeners, hostPortOwner, hostRegistryRead, hostRegistryWrite, hostScheduledTaskControl, hostScheduledTaskGet, hostScheduledTaskList, hostServiceControl, hostServiceList, hostSystemInfo, hostSystemProcessDetail, hostSystemProcesses, hostSystemProcessTree } from "./windows.js";
 
 const P = z.string().min(2);
@@ -133,17 +133,40 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
 
 type AuditMeta = { root_id?: string; target_kind?: string; command_hash?: string; pid?: number };
 
+// Audit is a separate outcome: never replace an operation result or replay an
+// operation because its audit record could not be written.
+async function withAuditResult(context: HostBreakglassContext, event: HostAuditEvent, response: CallToolResult): Promise<CallToolResult> {
+  try {
+    await context.audit.write(event);
+    return response;
+  } catch {
+    return {
+      ...response,
+      content: [...response.content, {
+        type: "text",
+        text: JSON.stringify({ audit: {
+          ok: false,
+          code: "HOST_BREAKGLASS_AUDIT_WRITE_FAILED",
+          message: "Audit recording failed. The operation result is unchanged; do not repeat the operation solely because of this audit failure."
+        } })
+      }]
+    };
+  }
+}
+
 async function executeTool(context: HostBreakglassContext, action: string, operation: () => Promise<unknown>, meta: AuditMeta = {}): Promise<CallToolResult> {
   const started = Date.now();
+  let response: CallToolResult;
+  let detail: string | undefined;
   try {
     const result = await operation();
-    await context.audit.write({ action, ok: true, duration_ms: Date.now() - started, ...meta });
-    return { content: [{ type: "text", text: JSON.stringify({ ok: true, result }, null, 2) }] };
+    response = { content: [{ type: "text", text: JSON.stringify({ ok: true, result }, null, 2) }] };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await context.audit.write({ action, ok: false, duration_ms: Date.now() - started, ...meta, detail: error instanceof Error ? error.name : "error" });
-    return { isError: true, content: [{ type: "text", text: JSON.stringify({ ok: false, error: { code: "HOST_BREAKGLASS_ERROR", message, retryable: false } }, null, 2) }] };
+    detail = error instanceof Error ? error.name : "error";
+    response = { isError: true, content: [{ type: "text", text: JSON.stringify({ ok: false, error: { code: "HOST_BREAKGLASS_ERROR", message, retryable: false } }, null, 2) }] };
   }
+  return withAuditResult(context, { action, ok: response.isError !== true, duration_ms: Date.now() - started, ...meta, ...(detail ? { detail } : {}) }, response);
 }
 
 async function executeComputerUseTool(
@@ -152,29 +175,25 @@ async function executeComputerUseTool(
   args: Record<string, unknown>
 ): Promise<CallToolResult> {
   const started = Date.now();
+  let response: CallToolResult;
+  let detail: string | undefined;
   try {
-    const result = await context.computerUse.call(tool, args);
-    await context.audit.write({
-      action: "host_computer_use_call",
-      ok: result.isError !== true,
-      duration_ms: Date.now() - started,
-      target_kind: `computer-use:${tool}`
-    });
-    return result;
+    response = await context.computerUse.call(tool, args);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await context.audit.write({
-      action: "host_computer_use_call",
-      ok: false,
-      duration_ms: Date.now() - started,
-      target_kind: `computer-use:${tool}`,
-      detail: error instanceof Error ? error.name : "error"
-    });
-    return {
+    detail = error instanceof Error ? error.name : "error";
+    response = {
       isError: true,
       content: [{ type: "text", text: JSON.stringify({ ok: false, error: { code: "HOST_BREAKGLASS_COMPUTER_USE_ERROR", message, retryable: true } }, null, 2) }]
     };
   }
+  return withAuditResult(context, {
+    action: "host_computer_use_call",
+    ok: response.isError !== true,
+    duration_ms: Date.now() - started,
+    target_kind: `computer-use:${tool}`,
+    ...(detail ? { detail } : {})
+  }, response);
 }
 
 async function executeDiagnosticsBatch(
@@ -262,6 +281,8 @@ async function executeComputerUseObserve(
   const started = Date.now();
   const content: CallToolResult["content"] = [{ type: "text", text: JSON.stringify({ ok: true, window_id: args.window_id, include_ui: args.include_ui, include_screenshot: args.include_screenshot }) }];
   let failed = false;
+  let response: CallToolResult;
+  let detail: string | undefined;
   try {
     const calls: Array<{ label: string; result: CallToolResult }> = [];
     calls.push({ label: "window", result: await context.computerUse.call("get_window", { window_id: args.window_id }) });
@@ -272,13 +293,19 @@ async function executeComputerUseObserve(
       content.push({ type: "text", text: `--- ${call.label} ---` });
       content.push(...call.result.content);
     }
-    await context.audit.write({ action: "host_window_observe", ok: !failed, duration_ms: Date.now() - started, target_kind: `computer-use:window:${args.window_id}` });
-    return { content, ...(failed ? { isError: true } : {}) };
+    response = { content, ...(failed ? { isError: true } : {}) };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await context.audit.write({ action: "host_window_observe", ok: false, duration_ms: Date.now() - started, target_kind: `computer-use:window:${args.window_id}`, detail: error instanceof Error ? error.name : "error" });
-    return { isError: true, content: [{ type: "text", text: JSON.stringify({ ok: false, error: { code: "HOST_BREAKGLASS_WINDOW_OBSERVE_ERROR", message, retryable: true } }, null, 2) }] };
+    detail = error instanceof Error ? error.name : "error";
+    response = { isError: true, content: [{ type: "text", text: JSON.stringify({ ok: false, error: { code: "HOST_BREAKGLASS_WINDOW_OBSERVE_ERROR", message, retryable: true } }, null, 2) }] };
   }
+  return withAuditResult(context, {
+    action: "host_window_observe",
+    ok: response.isError !== true,
+    duration_ms: Date.now() - started,
+    target_kind: `computer-use:window:${args.window_id}`,
+    ...(detail ? { detail } : {})
+  }, response);
 }
 async function assertExpectedFileHash(context: HostBreakglassContext, path: string, expectedHash: string | undefined): Promise<void> {
   if (!expectedHash) return;

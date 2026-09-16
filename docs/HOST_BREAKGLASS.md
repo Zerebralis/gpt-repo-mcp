@@ -209,6 +209,26 @@ are not part of the repository.
 
 ## Validation
 
+### Operation results and audit failures
+
+Audit recording is attempted once after an operation has produced its result.
+An audit-write failure does not change the operation's result, `isError`, or
+existing error code/message, and never causes the operation to run again.
+This also applies to the Computer-Use proxy and window-observation wrapper;
+existing content blocks, including images, remain intact.
+
+When audit recording fails, one additional MCP text content block contains:
+
+```json
+{"audit":{"ok":false,"code":"HOST_BREAKGLASS_AUDIT_WRITE_FAILED","message":"Audit recording failed. The operation result is unchanged; do not repeat the operation solely because of this audit failure."}}
+```
+
+The warning describes audit recording only. It is not an operation failure or
+permission to retry a mutation. Raw audit-sink error details are not returned.
+When audit recording succeeds (or audit is not configured), the response shape
+is unchanged. This contract does not add audit persistence guarantees or
+operation deduplication across separate requests.
+
 The built smoke exercises the server through MCP, not direct function calls:
 
 ```powershell
