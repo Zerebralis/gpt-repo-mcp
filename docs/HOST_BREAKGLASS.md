@@ -350,6 +350,62 @@ npm run check:public
 npm run build
 ```
 
+## Self-contained release packaging
+
+`npm run host:release -- --out <release-directory>` builds a versioned release
+from a **clean checkout** using the existing `npm run build` first. Install the
+locked build dependencies with `npm ci` before building. The builder requires
+MCP SDK **1.29.0** and the direct, exact development dependency **esbuild 0.27.7**.
+
+Only the release outputs of the GUI runtime and the existing Core build are
+bundled as Node/ESM, including their npm dependencies. Node builtins remain
+external. The Core source, supervisor, connector, retry policies, tool contracts
+and GUI lifecycle are unchanged. The GUI child remains a separate neighboring
+file; all other allowlisted runtime scripts are copied byte-for-byte.
+
+The release contains no `node_modules` directory and needs no `NODE_PATH` or
+repository installation at runtime. Node.js (the manifest's Node requirement),
+Windows PowerShell, the Computer-Use runtime and the Secure MCP Tunnel runtime
+with its existing host prerequisites must still be provisioned separately.
+Configuration, credentials, state and audit targets are external deployment
+inputs and are never copied into the release.
+
+Each version directory contains `runtime/`, a deterministic `.tar.gz` archive
+and its SHA-256 sidecar. Archive members are sorted, with fixed timestamps,
+permissions and owner metadata. `release-manifest.json` binds the Git commit
+and tree, clean state, Node requirement, lockfile hash, SDK/bundler versions,
+builder version/hash, GUI source and bundle hashes, Core build and bundle
+hashes, all bundler input hashes, and every payload file's relative path/hash.
+It contains no absolute host paths, credentials, runtime PIDs or ports.
+An existing version is never overwritten.
+
+For uncommitted review only, `npm run host:release -- --preview` permits a dirty
+checkout and emits an explicitly named **review-preview**. Its Git identity is
+the base commit/tree; it is not a claim that the preview is committed. Source,
+bundle and payload hashes bind the preview bytes. A regular release must be
+rebuilt from the reviewed, committed, clean checkout before deployment.
+
+Packaging regression: `npx vitest run tests/host-breakglass-release.test.mjs`.
+This builds twice in different directories, compares bytes, extracts the
+archive with `tar`, checks unchanged scripts and manifest coverage, and runs
+GUI imports and Core health outside the repository. ESM and CommonJS guards
+actively reject module resolution outside the release, with a negative control
+for the repository SDK. No ancestor `node_modules` or `NODE_PATH` is available.
+
+Explicit Windows real-runtime gate:
+`npm run host:release:smoke -- <release-runtime-directory>`. It copies the
+release to a new OS temporary directory outside the repository, uses isolated
+state/configuration/audit and free alternative loopback ports, starts the real
+Computer-Use backend, probes its MCP handshake and read-only display-size call,
+and verifies native Core health and 39 MCP tools. The real tunnel runs against
+an isolated local control-plane stub via the connector's existing test seam;
+production credentials and the real remote control plane are not used. The
+actual supervisor entry is separately imported/started against an isolated
+missing-credential gate. Cleanup verifies owned processes, free ports and
+unchanged foreign tunnel/Codex identities. The private report remains in the
+temporary test directory for review. No Scheduled Task is changed by the
+builder or smoke; production activation requires separate authorization.
+
 ## Acceptance Target
 
 Host-Core acceptance is not the final RDC-retirement acceptance. The complete
