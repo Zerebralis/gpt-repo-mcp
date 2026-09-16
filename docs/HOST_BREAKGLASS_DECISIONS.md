@@ -117,9 +117,26 @@ Further efficiency should first come from better composition of existing primiti
 
 Do not automatically add more top-level tools when composition solves the problem with the current surface.
 
-# B. Accepted direction, not yet implemented
+## Stable Runtime / separate recovery artifact
 
-These are prioritized architecture targets. They are **not** documented as production-complete.
+Status: **IMPLEMENTED / LIVE ACCEPTED**.
+
+Production runs the versioned release `host-breakglass-e27c0e2a4193-7b92c5ec65e1`, bound to:
+
+- runtime commit: `e27c0e2a419361c72e2948868e71d9c6f7bfe322`;
+- Git tree: `1bfb39666d3cc3311ab7cfd8eebd2aca73721ca5`;
+- artifact SHA-256: `8EC5A18DC25DD682CF4FE22910383C483AFC80D48978AC2FF0EAB059637932AD`;
+- manifest SHA-256: `7B92C5EC65E1CFFFEA515D370B8BBE3F825718141FF8824F5B57E4CD0BA02BD9`.
+
+The regular release is materialized outside the development repository. Its manifest binds the clean source commit/tree, build dependencies, and all payload hashes. Core and GUI runtime code include their npm runtime dependencies; the release needs neither runtime `node_modules`, `NODE_PATH`, nor the development checkout to load and execute that code. Out-of-repository dependency isolation and production activation are verified.
+
+Node and the explicitly provisioned Computer-Use and Tunnel runtimes remain external host dependencies. Host configuration, credentials, state, and audit storage remain separately provisioned inputs; their existing locations and contracts were not changed by packaging. Independence of release code does not imply relocation of these inputs.
+
+The Scheduled Task starts the stable release with the existing user/security and configuration contract. A verified previous runtime and its complete task contract remain available for explicit rollback. Do not turn this release/activation path into a self-update system or package-management platform.
+
+# B. Lifecycle status and remaining accepted direction
+
+Implemented and live-accepted slices are identified explicitly below. Remaining architecture targets are **not** documented as production-complete.
 
 ## Failure-domain isolation / lifecycle decoupling
 
@@ -152,20 +169,9 @@ Use a shared time/response budget, bounded parallelism for local reads, and coll
 
 Status: **PRIORITY #3 — not implemented**.
 
-## Runtime identity / separate recovery artifact
+## Further runtime identity metadata
 
-Long-term direction: bind the running recovery runtime clearly to:
-
-- commit;
-- artifact hash;
-- tool-schema fingerprint;
-- server/instance generation.
-
-Production should not depend exclusively on an ambiguous mutable development checkout. Prefer a simple release/activation path with a previously working artifact available for explicit rollback.
-
-Do not turn this into a self-update system or package-management platform.
-
-Status: **PRIORITY #4 — not implemented**.
+Stable release packaging and commit/artifact/manifest binding are implemented as recorded above. Additional tool-schema fingerprints and server/instance-generation identity remain future work; packaging acceptance does not claim those extensions.
 
 # C. Deliberately not prioritized now
 
@@ -195,9 +201,9 @@ Do not build an app-specific recovery-agent framework into Breakglass. Fixed dia
 
 # D. Current production baseline
 
-Current production baseline:
+Current production runtime-code baseline (later documentation-only commits do not change the active artifact):
 
-`main@70110c09665274eff5814f16feaec66164f37cf8`
+`e27c0e2a419361c72e2948868e71d9c6f7bfe322`
 
 Production capabilities/decisions accepted at this baseline include:
 
@@ -211,6 +217,10 @@ Production capabilities/decisions accepted at this baseline include:
 - separation of operation result from audit result;
 - GUI Failure Domain isolation — **IMPLEMENTED / LIVE ACCEPTED**;
 - Tunnel Failure Domain isolation — **IMPLEMENTED / LIVE ACCEPTED**;
+- Stable Runtime / separate recovery artifact — **IMPLEMENTED / LIVE ACCEPTED**;
+- self-contained Core and GUI runtime npm dependencies with verified out-of-repository isolation;
+- versioned production release bound to the commit and artifact/manifest hashes above;
+- explicit verified rollback runtime and complete previous task contract retained;
 - tunnel-generation cleanup through a generation-bound Windows Job Object;
 - reconnect without MCP replay.
 
