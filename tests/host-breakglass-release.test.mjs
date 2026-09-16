@@ -47,6 +47,8 @@ describe('self-contained Host Breakglass release packaging', () => {
     expect(first.manifest).toMatchObject({ sdk_version: '1.29.0', bundler: { name: 'esbuild', version: '0.27.7' }, schema: 'host-breakglass-release.v1', builder_version: 1 });
     expect(first.manifest.package_lock_sha256).toBe(sha256(await readFile(join(root, 'package-lock.json'))));
     expect(first.manifest.gui.source_sha256).toBe(sha256(await readFile(join(root, 'scripts/host-breakglass-gui-runtime.mjs'))));
+    expect(first.manifest.core_liveness.source_sha256).toBe(sha256(await readFile(join(root, 'scripts/host-breakglass-core-liveness.mjs'))));
+    expect(first.manifest.core_liveness.bundle_sha256).toBe(sha256(await readFile(join(first.directory, 'scripts/host-breakglass-core-liveness.mjs'))));
     const seen = [];
     async function walk(dir, prefix = '') { for (const item of await readdir(dir, { withFileTypes: true })) { const p = prefix + item.name; if (item.isDirectory()) await walk(join(dir, item.name), p + '/'); else seen.push(p); } }
     await walk(first.directory);
@@ -93,6 +95,24 @@ describe('self-contained Host Breakglass release packaging', () => {
     let health;
     for (let i = 0; i < 100; i++) { if (core.exitCode !== null) throw Error(stderr); try { health = await (await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(200) })).json(); break; } catch { await sleep(50); } }
     expect(health).toMatchObject({ ok: true, mode: 'safe', tool_count: 39 });
+    // Execute the actual bundled watchdog under both module guards, outside the
+    // checkout. Repeated functional probes must share one session and remove it.
+    const probeScript = `
+      const {createCoreLivenessWatchdog}=await import('./scripts/host-breakglass-core-liveness.mjs');
+      await import('./scripts/connect-host-breakglass-openai.mjs');
+      const watchdog=createCoreLivenessWatchdog({pid:${core.pid},port:${port}},{intervalMs:50,timeoutMs:1000});
+      try {
+        watchdog.start(); const end=Date.now()+5000;
+        while(watchdog.state().probes<3||watchdog.state().status!=='ready'){
+          if(Date.now()>end)throw Error('Bundled functional probe failed');await new Promise(r=>setTimeout(r,20));
+        }
+        const health=await(await fetch('http://127.0.0.1:${port}/health')).json();
+        if(health.mcp_sessions.cumulative.committed!==1||watchdog.state().failures!==0)throw Error('Probe session churn');
+      } finally {await watchdog.stop();}
+    `;
+    execFileSync(process.execPath, [...flags, '--input-type=module', '-e', probeScript], { cwd: allowed, env, windowsHide: true, stdio: 'pipe', timeout: 10000 });
+    const afterProbe = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+    expect(afterProbe.mcp_sessions.active).toBe(0);
     const exited = once(core, 'exit'); core.kill(); await exited;
     expect(stderr).not.toContain('ERR_MODULE_NOT_FOUND');
   }, 20000);

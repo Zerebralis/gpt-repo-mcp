@@ -215,8 +215,8 @@ with bounded backoff:
 
 GUI lifecycle is separate from that connector cycle. The OpenAI connector starts
 Core once and replaces only its own tunnel generation on tunnel failure. Core
-liveness supervision, recovery after supervisor failure, and job persistence
-remain outside this isolation change. A Core restart still loses in-memory job
+functional liveness is checked separately as described below. Recovery after
+supervisor failure and job persistence remain out of scope. A Core restart still loses in-memory job
 handles; GUI and tunnel recovery do not. Configuration changes require an explicit
 controlled restart; GUI configuration is not hot-reloaded across connector retries.
 
@@ -357,10 +357,10 @@ from a **clean checkout** using the existing `npm run build` first. Install the
 locked build dependencies with `npm ci` before building. The builder requires
 MCP SDK **1.29.0** and the direct, exact development dependency **esbuild 0.27.7**.
 
-Only the release outputs of the GUI runtime and the existing Core build are
+Only the release outputs of the GUI runtime, Core functional watchdog and existing Core build are
 bundled as Node/ESM, including their npm dependencies. Node builtins remain
-external. The Core source, supervisor, connector, retry policies, tool contracts
-and GUI lifecycle are unchanged. The GUI child remains a separate neighboring
+external. Bundling does not change source behavior, retry policies, tool contracts
+or GUI lifecycle. The GUI child remains a separate neighboring
 file; all other allowlisted runtime scripts are copied byte-for-byte.
 
 The release contains no `node_modules` directory and needs no `NODE_PATH` or
@@ -374,7 +374,7 @@ Each version directory contains `runtime/`, a deterministic `.tar.gz` archive
 and its SHA-256 sidecar. Archive members are sorted, with fixed timestamps,
 permissions and owner metadata. `release-manifest.json` binds the Git commit
 and tree, clean state, Node requirement, lockfile hash, SDK/bundler versions,
-builder version/hash, GUI source and bundle hashes, Core build and bundle
+builder version/hash, GUI and Core-watchdog source and bundle hashes, Core build and bundle
 hashes, all bundler input hashes, and every payload file's relative path/hash.
 It contains no absolute host paths, credentials, runtime PIDs or ports.
 An existing version is never overwritten.
@@ -405,6 +405,52 @@ missing-credential gate. Cleanup verifies owned processes, free ports and
 unchanged foreign tunnel/Codex identities. The private report remains in the
 temporary test directory for review. No Scheduled Task is changed by the
 builder or smoke; production activation requires separate authorization.
+
+## Core functional liveness (implementation candidate; not live accepted)
+
+The connector continues to spawn and own the Core child. `/health` remains the
+startup gate, but a successful health response alone does not prove that MCP
+request dispatch still works. After startup, a connector-local watchdog opens
+its own loopback MCP session and calls only `host_system_info` with empty
+arguments. The successful operation envelope must contain the exact PID of
+the child spawned by this connector. A separate audit warning does not invalidate
+a successful operation; a tool error, missing/ambiguous result, wrong PID,
+transport error or deadline expiry is a functional failure.
+
+The first probe starts immediately after the startup gate and tunnel lifecycle
+initialization. Subsequent probes run 30 seconds after the preceding probe
+settles, with at most one in flight. A 5-second total budget includes session
+initialization, the initialized notification, and the tool response. Successful
+probes reset the consecutive failure counter; one or two failures cause no
+restart. Three consecutive failures trigger the connector's existing shutdown
+exactly once. The existing supervisor then applies its connector restart/backoff.
+There is no additional supervisor or independent Core restart mechanism.
+
+Healthy probes reuse one private MCP session. A failed connection is discarded,
+its I/O is aborted and its session receives a best-effort DELETE with a 500 ms
+budget. The next scheduled probe may create a new session; there is no immediate
+probe retry or MCP request replay. Session IDs are not published. The watchdog's
+SDK dependency is bundled into the release, preserving out-of-repository startup
+without `node_modules` or `NODE_PATH`.
+
+Each watchdog instance is bound to one Core spawn generation and each in-flight
+probe has its own identity/cancellation scope. Shutdown fences callbacks, cancels
+the next probe and aborts outstanding I/O before the existing tunnel/Core cleanup.
+Late results cannot update failure counts, close a newer session or trigger
+recovery after shutdown. Logs report only degraded/failed status and consecutive
+failure count, without connection details or raw tool output.
+
+GUI and tunnel recovery policies are unchanged. A confirmed Core failure invokes
+the existing overall connector shutdown, so its tunnel also stops and in-memory
+Managed Job mappings are lost. This watchdog does not add job persistence, child
+process adoption, mutation replay or stronger Windows descendant cleanup. The
+independently owned GUI remains under its existing supervisor lifecycle.
+
+Focused tests: `npx vitest run tests/host-breakglass-core-liveness.test.mjs
+tests/host-breakglass-core-liveness-integration.test.mjs`. Packaging tests also
+execute the bundled watchdog against a real Core outside the repository, with
+ESM/CommonJS dependency guards and checks for session reuse and termination.
+Production activation and live acceptance require separate authorization.
 
 ## Acceptance Target
 
