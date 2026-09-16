@@ -123,17 +123,15 @@ These are prioritized architecture targets. They are **not** documented as produ
 
 ## Failure-domain isolation / lifecycle decoupling
 
-Target direction:
+Failure-domain isolation is now partially implemented and live accepted:
 
-- keep Host Core as independent as practical from the GUI backend;
-- GUI failure should not unnecessarily block file/process recovery;
-- tunnel recycle should avoid taking Host Core down with it where practical;
-- managed jobs should not be lost merely because transport is unhealthy;
-- check core liveness separately from tunnel liveness.
+- **GUI Failure Domain — IMPLEMENTED / LIVE ACCEPTED.** A GUI failure recycles only the GUI generation; Host Core and unrelated recovery capability remain available.
+- **Tunnel Failure Domain — IMPLEMENTED / LIVE ACCEPTED.** A tunnel failure recycles only the connector-owned tunnel generation. Tunnel cleanup is bound to that generation through a Windows Job Object.
+- During the productive tunnel live test, Host Core, Connector, GUI, and existing Managed Jobs remained intact while only the tunnel generation was replaced.
+- Tunnel reconnect completed without MCP replay.
+- **Core Functional Liveness — OPEN / NEXT.** Core functional health still needs an explicit independent liveness contract beyond process existence and transport health.
 
-Current architecture still couples GUI, tunnel, and Host Core more strongly than ideal for a recovery layer.
-
-Status: **PRIORITY #2 — not implemented**.
+The architectural goal remains to minimize cross-domain lifecycle coupling and to preserve recovery work across failures whenever state is known to be safe.
 
 ## Bounded diagnostic profiles
 
@@ -197,9 +195,9 @@ Do not build an app-specific recovery-agent framework into Breakglass. Fixed dia
 
 # D. Current production baseline
 
-Current production baseline after audit-result hardening:
+Current production baseline:
 
-`main@5699550c42137ac5cdfa23855213aed663fe0f41`
+`main@70110c09665274eff5814f16feaec66164f37cf8`
 
 Production capabilities/decisions accepted at this baseline include:
 
@@ -210,7 +208,13 @@ Production capabilities/decisions accepted at this baseline include:
 - session pressure reclaim;
 - 80% soft headroom;
 - cumulative session telemetry;
-- separation of operation result from audit result.
+- separation of operation result from audit result;
+- GUI Failure Domain isolation — **IMPLEMENTED / LIVE ACCEPTED**;
+- Tunnel Failure Domain isolation — **IMPLEMENTED / LIVE ACCEPTED**;
+- tunnel-generation cleanup through a generation-bound Windows Job Object;
+- reconnect without MCP replay.
+
+**Core Functional Liveness remains OPEN / NEXT.**
 
 # E. Do not persist
 
