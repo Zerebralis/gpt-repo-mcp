@@ -49,9 +49,11 @@ if (-not (Test-Path $configPath)) { throw "Host Breakglass config not found at c
 $config = Get-Content $configPath -Raw | ConvertFrom-Json
 if ($config.enabled -ne $true) { throw "Host Breakglass config is not enabled" }
 if ($config.computer_use -and $config.computer_use.enabled -eq $true) {
-  $computerUseEntry = $envValues["GPT_HOST_BREAKGLASS_COMPUTER_USE_ENTRY"]
-  if (-not $computerUseEntry) { $computerUseEntry = "C:\Tools\computer-use-runtime\node_modules\@zavora-ai\computer-use-mcp\dist\http.js" }
-  if (-not (Test-Path $computerUseEntry)) { throw "Computer-Use runtime not found at configured path" }
+  $guiUrl = [Uri]$(if ($config.computer_use.server_url) { $config.computer_use.server_url } else { 'http://127.0.0.1:3107/mcp' })
+  if ($guiUrl.Scheme -ne 'http' -or $guiUrl.Host.Trim('[', ']') -notin @('127.0.0.1', 'localhost', '::1') -or $guiUrl.AbsolutePath.TrimEnd('/') -ne '/mcp' -or $guiUrl.UserInfo -or $guiUrl.Query -or $guiUrl.Fragment) {
+    throw 'Computer-Use target must be an unauthenticated loopback MCP URL'
+  }
+  # GUI runtime availability is optional; policy validation is not.
 }
 
 $taskAction = New-ScheduledTaskAction -Execute $Node -Argument ('"{0}"' -f $Supervisor) -WorkingDirectory $RepoRoot

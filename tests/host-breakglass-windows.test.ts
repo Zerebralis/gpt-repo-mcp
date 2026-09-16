@@ -92,6 +92,12 @@ afterEach(() => {
 describe("Host Breakglass Windows process termination", () => {
   it("classifies protected Breakglass stack components", () => {
     expect(protectedBreakglassRole({
+      ProcessId: 9,
+      ParentProcessId: 1,
+      Name: "node.exe",
+      CommandLine: "node C:\\Tools\\gpt-repo-mcp\\scripts\\host-breakglass-gui-child.mjs D:\\custom\\backend.mjs generation"
+    })).toBe("Computer-Use");
+    expect(protectedBreakglassRole({
       ProcessId: 10,
       ParentProcessId: 1,
       Name: "node.exe",

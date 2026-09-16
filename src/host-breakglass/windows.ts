@@ -21,6 +21,7 @@ type WindowsProcessDetails = {
 const PROTECTED_BREAKGLASS_COMMAND_MARKERS = [
   "\\gpt-repo-mcp\\scripts\\host-breakglass-supervisor.mjs",
   "\\gpt-repo-mcp\\scripts\\host-breakglass-computer-use.mjs",
+  "\\gpt-repo-mcp\\scripts\\host-breakglass-gui-child.mjs",
   "\\gpt-repo-mcp\\scripts\\connect-host-breakglass-openai.mjs",
   "dist\\host-breakglass\\server.js",
   "\\computer-use-runtime\\node_modules\\@zavora-ai\\computer-use-mcp\\dist\\http.js"
@@ -315,7 +316,7 @@ export function protectedBreakglassRole(target: WindowsProcessDetails): string |
 
   if (PROTECTED_BREAKGLASS_COMMAND_MARKERS.some((marker) => commandLine.includes(marker))) {
     if (commandLine.includes("host-breakglass-supervisor.mjs")) return "Host Breakglass supervisor";
-    if (commandLine.includes("host-breakglass-computer-use.mjs") || commandLine.includes("computer-use-runtime")) return "Computer-Use";
+    if (commandLine.includes("host-breakglass-computer-use.mjs") || commandLine.includes("host-breakglass-gui-child.mjs") || commandLine.includes("computer-use-runtime")) return "Computer-Use";
     if (commandLine.includes("connect-host-breakglass-openai.mjs")) return "Host Breakglass tunnel launcher";
     if (commandLine.includes("dist\\host-breakglass\\server.js")) return "Host Breakglass server";
     return "Host Breakglass component";

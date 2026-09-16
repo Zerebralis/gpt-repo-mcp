@@ -140,6 +140,31 @@ npm run host:computer-use
 
 The independent supervisor starts and monitors this backend automatically when
 `computer_use.enabled=true`.
+
+Computer Use is optional for native recovery. A missing GUI runtime, startup
+failure, readiness timeout, or later GUI crash does not stop or restart the
+connector, Host Core, tunnel, or managed jobs. Invalid GUI configuration still
+blocks startup. The supervised backend runs directly in its owned child process;
+the standalone `host:computer-use` entry uses the same launch configuration.
+
+The supervisor reports `gui.status` (`disabled`, `starting`, `ready`,
+`unavailable`, or `degraded`), an ephemeral generation, attempt count, and reason
+in its local state. Readiness requires that generation's private IPC report of
+its own listening socket and a bounded MCP handshake. An occupied port is never
+adopted or cleared. `/health`'s existing `computer_use` field still means
+configured/enabled, not live GUI readiness.
+
+GUI recovery allows three total attempts per supervisor lifetime, with 2-second
+and 5-second backoffs. Successful starts do not replenish that budget, and
+connector restarts do not reset it. Exhaustion remains visibly unavailable or
+degraded; there is no endless retry loop. A replacement is allowed only after
+the previous owned process has exited. Cleanup uses cooperative IPC and a bounded
+fallback on that child handle, never a PID file or a foreign port owner.
+
+The GUI adapter bounds connection establishment to five seconds, discards failed
+connections, and lets a later call establish a new one. Existing action timeout
+semantics and successful responses remain unchanged. Failed GUI operations are
+never replayed automatically, including when their outcome is uncertain.
 ## Preferred Transport: OpenAI Secure MCP Tunnel
 
 The preferred remote path is OpenAI Secure MCP Tunnel because it is outbound
@@ -187,6 +212,12 @@ not use endpoint pooling to mix the normal repo server and Host Breakglass.
 The Breakglass stack must not depend on AWA, RDC, or the normal Repo MCP
 process. The supervisor runs the OpenAI connector independently and restarts it
 with bounded backoff:
+
+GUI lifecycle is separate from that connector cycle. Tunnel-to-Core coupling,
+Core liveness supervision, recovery after supervisor failure, and job persistence
+remain outside this isolation change. A Core restart still loses in-memory job
+handles; a GUI restart does not. Configuration changes require an explicit
+controlled restart; GUI configuration is not hot-reloaded across connector retries.
 
 ```powershell
 npm run host:supervisor

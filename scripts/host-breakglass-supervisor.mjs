@@ -1,29 +1,35 @@
-/* global process, console, fetch, setTimeout, AbortSignal, URL */
+/* global process, console, setTimeout */
 import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
+import { computerUseLaunchSpec, createGuiRuntime } from "./host-breakglass-gui-runtime.mjs";
 
 const repoRoot = resolve(process.env.GPT_HOST_BREAKGLASS_REPO_ROOT ?? process.cwd());
 const stateDir = process.env.GPT_HOST_BREAKGLASS_STATE_DIR ?? join(process.env.LOCALAPPDATA ?? repoRoot, "gpt-repo-host-breakglass");
 const statePath = join(stateDir, "supervisor-state.json");
 const logPath = join(stateDir, "supervisor.log");
 const connectorPath = join(repoRoot, "scripts", "connect-host-breakglass-openai.mjs");
-const computerUsePath = join(repoRoot, "scripts", "host-breakglass-computer-use.mjs");
 const backoffMs = [2_000, 5_000, 15_000, 30_000, 60_000];
 const children = new Map();
 let stopping = false;
 let restarts = 0;
-
-await mkdir(stateDir, { recursive: true });
-await rotateLogIfNeeded();
-await writeState({ status: "starting" });
-log(`supervisor start pid=${process.pid}`);
+let gui;
+let supervisorState = {};
+let stateWrites = Promise.resolve();
 
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
 
+await mkdir(stateDir, { recursive: true });
+await rotateLogIfNeeded();
+if (!stopping) {
+  await writeState({ status: "starting" });
+  log(`supervisor start pid=${process.pid}`);
+}
+
 while (!stopping) {
   const preflight = await preflightConfig();
+  if (stopping) break;
   if (!preflight.ok) {
     await writeState({ status: "blocked", reason: preflight.reason });
     log(`blocked: ${preflight.reason}`);
@@ -33,10 +39,16 @@ while (!stopping) {
 
   const startedAt = Date.now();
   try {
-    if (preflight.computerUseUrl) {
-      const gui = startChild("computer-use", computerUsePath, preflight.env);
-      await waitForMcp(preflight.computerUseUrl, gui, 15_000);
-      log("computer-use ready");
+    if (!gui) {
+      gui = createGuiRuntime(preflight.guiSpec, {
+        onChild: (child) => { pipeToLog(child.stdout, "computer-use"); pipeToLog(child.stderr, "computer-use"); },
+        onState: (state) => {
+          if (stopping) return;
+          log(`computer-use ${state.status} attempt=${state.attempts} reason=${state.reason ?? "none"}`);
+          void writeState({ gui: state, computer_use_pid: state.pid }).catch(() => log("GUI state write failed"));
+        }
+      });
+      gui.start(); // Optional GUI never gates connector startup or shares its retry cycle.
     }
 
     const connector = startChild("connector", connectorPath, preflight.env);
@@ -44,7 +56,7 @@ while (!stopping) {
       status: "running",
       restart_count: restarts,
       connector_pid: connector.pid ?? null,
-      computer_use_pid: children.get("computer-use")?.pid ?? null
+      computer_use_pid: gui.state().pid
     });
 
     const ended = await Promise.race(
@@ -86,23 +98,15 @@ async function preflightConfig() {
   try { config = JSON.parse((await readFile(configPath, "utf8")).replace(/^\uFEFF/, "")); }
   catch { return { ok: false, reason: "host-breakglass config missing or invalid" }; }
 
-  let computerUseUrl;
-  if (config?.computer_use?.enabled === true) {
-    const entry = values.GPT_HOST_BREAKGLASS_COMPUTER_USE_ENTRY?.trim()
-      || "C:\\Tools\\computer-use-runtime\\node_modules\\@zavora-ai\\computer-use-mcp\\dist\\http.js";
-    try { await stat(entry); }
-    catch { return { ok: false, reason: "computer-use runtime missing" }; }
-    try {
-      const url = new URL(config.computer_use.server_url);
-      assertLoopbackMcpUrl(url);
-      computerUseUrl = url.toString();
-    } catch { return { ok: false, reason: "computer-use URL invalid" }; }
-  }
+  const env = { ...process.env, ...values, GPT_HOST_BREAKGLASS_CONFIG: configPath };
+  let guiSpec;
+  try { guiSpec = computerUseLaunchSpec(config, env, repoRoot, stateDir); }
+  catch { return { ok: false, reason: "computer-use configuration invalid" }; }
 
   return {
     ok: true,
-    env: { ...process.env, ...values, GPT_HOST_BREAKGLASS_CONFIG: configPath },
-    computerUseUrl
+    env,
+    guiSpec
   };
 }
 
@@ -120,19 +124,6 @@ function startChild(label, script, env) {
   return child;
 }
 
-async function waitForMcp(target, child, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null || child.signalCode !== null) throw new Error("computer-use exited before readiness");
-    try {
-      const response = await fetch(target, { method: "GET", signal: AbortSignal.timeout(500) });
-      if (response.status > 0) return;
-    } catch { /* still starting */ }
-    await delay(100);
-  }
-  throw new Error("computer-use did not become reachable");
-}
-
 async function stopChildren() {
   const live = [...children.values()].filter((child) => child.exitCode === null && child.signalCode === null);
   for (const child of live) child.kill("SIGTERM");
@@ -141,12 +132,6 @@ async function stopChildren() {
   children.clear();
 }
 
-function assertLoopbackMcpUrl(url) {
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "::1"].includes(host) || url.pathname.replace(/\/+$/, "") !== "/mcp") {
-    throw new Error("not loopback MCP");
-  }
-}
 function parseEnv(raw) {
   const values = {};
   for (const line of raw.split(/\r?\n/)) {
@@ -176,8 +161,13 @@ function pipeToLog(stream, label) {
   stream.on("end", () => { if (buffer.trim()) log(`${label}: ${buffer}`); });
 }
 async function writeState(extra) {
-  const safe = { schema: "gpt-host-breakglass-supervisor.v1", supervisor_pid: process.pid, updated_at: new Date().toISOString(), ...extra };
-  await writeFile(statePath, JSON.stringify(safe, null, 2), { encoding: "utf8", mode: 0o600 });
+  supervisorState = extra.status
+    ? { gui: supervisorState.gui, computer_use_pid: supervisorState.computer_use_pid, ...extra }
+    : { ...supervisorState, ...extra };
+  const safe = { schema: "gpt-host-breakglass-supervisor.v1", supervisor_pid: process.pid, updated_at: new Date().toISOString(), ...supervisorState };
+  // GUI and connector report independently; serialize snapshots to prevent stale overwrites.
+  stateWrites = stateWrites.catch(() => undefined).then(() => writeFile(statePath, JSON.stringify(safe, null, 2), { encoding: "utf8", mode: 0o600 }));
+  await stateWrites;
 }
 function log(message) {
   const safe = String(message).replace(/https?:\/\/\S+/gi, "[URL]").replace(/tunnel_[A-Za-z0-9_-]+/g, "tunnel_[REDACTED]").replace(/(?:sk-|sess-|key-)[A-Za-z0-9_-]{12,}/g, "[REDACTED_KEY]");
@@ -193,9 +183,11 @@ async function rotateLogIfNeeded() {
 function shutdown(code) {
   if (stopping) return;
   stopping = true;
+  const guiStopped = gui?.stop();
   log(`supervisor shutdown code=${code}`);
   void writeState({ status: "stopping" }).finally(async () => {
     await stopChildren();
+    await guiStopped;
     process.exit(code);
   });
 }
