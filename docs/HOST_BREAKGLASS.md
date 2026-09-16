@@ -213,10 +213,11 @@ The Breakglass stack must not depend on AWA, RDC, or the normal Repo MCP
 process. The supervisor runs the OpenAI connector independently and restarts it
 with bounded backoff:
 
-GUI lifecycle is separate from that connector cycle. Tunnel-to-Core coupling,
-Core liveness supervision, recovery after supervisor failure, and job persistence
+GUI lifecycle is separate from that connector cycle. The OpenAI connector starts
+Core once and replaces only its own tunnel generation on tunnel failure. Core
+liveness supervision, recovery after supervisor failure, and job persistence
 remain outside this isolation change. A Core restart still loses in-memory job
-handles; a GUI restart does not. Configuration changes require an explicit
+handles; GUI and tunnel recovery do not. Configuration changes require an explicit
 controlled restart; GUI configuration is not hot-reloaded across connector retries.
 
 ```powershell
@@ -237,6 +238,75 @@ after that user logs in.
 
 Runtime state and logs live under `%LOCALAPPDATA%\gpt-repo-host-breakglass` and
 are not part of the repository.
+
+### Connector-local tunnel generations (Windows)
+
+The connector retries transient tunnel failures after confirmed cleanup with
+2-second and 5-second initial backoff. After the third failure it remains visibly
+`degraded` with `recovery: slow` and `retry_in_ms`, continuing after 15, 30 and then
+60 seconds. Further delays stay capped at 60 seconds. `attempts` is cumulative;
+`failure_streak` controls the current recovery delay. Short readiness does not
+reset it. Five continuous minutes of ready reset only `failure_streak`, so a later
+independent failure starts again at 2 seconds while cumulative attempts remain.
+The reset timer belongs to its generation and is canceled on failure or shutdown;
+even a failed watchdog probe below the recycle threshold interrupts the stable
+window. A stale callback cannot reset a newer generation or readiness window.
+Missing binaries, failed startup, readiness or poll
+timeouts, later root exit and the existing three-failure watchdog affect only the
+tunnel. There is no terminal retry budget for these recoverable failures. Core,
+local MCP sessions, managed job IDs/handles/output and the independently
+supervised GUI remain available throughout slow recovery.
+Core exit, explicit overall shutdown and invalid security configuration remain
+fatal. The supervisor's existing connector policy is otherwise unchanged.
+
+Each generation has a UUID, an abort fence, its own startup deadline and watchdog,
+and private discovery/log paths under `tunnel-generations/<UUID>`. Readiness needs
+both `/readyz` and a fresh successful poll from this process lifetime. The
+10-second watchdog, three consecutive failures and configured poll stale limit
+are preserved. Stale asynchronous work cannot publish or stop a newer generation.
+
+Windows PowerShell loads the small native ownership helper. It creates a private,
+unnamed Job Object with kill-on-close, creates the tunnel suspended, assigns it
+to that job, then resumes it. Only the three standard I/O handles are inherited;
+the job handle is private. The real tunnel's `cmd -> node -> codex` sidecars inherit
+job membership. Core and GUI are spawned outside this job. PID files, names,
+ports and old state never authorize adoption or termination. The health listener
+must match the root process in the owned job before startup probes proceed.
+
+Cleanup requests the owner helper to terminate its job and confirm an empty job
+and signaled root handle before the helper exits. This is forced backend cleanup,
+not a claim that Windows SIGTERM recursively or gracefully closes sidecars.
+Unconfirmed ownership/cleanup blocks replacement (`reason: cleanup_unconfirmed`).
+These fail-closed cases remain terminal regardless of elapsed time; slow recovery
+never overrides an unconfirmed old generation or permits overlapping generations.
+Helper loss closes the job as a safety fallback, but is not treated as confirmed
+cleanup. Shutdown cancels starts/probes/retries before waiting for tunnel cleanup
+and then follows the existing overall Core shutdown path.
+
+`connector-state.json` retains successful fields and adds generation, attempt,
+PID/creation identity and lifecycle status. The old health/PID filenames are only
+serialized compatibility views of the current ready generation. Doctor requires
+matching state/discovery, live Windows FILETIME identity, readiness and fresh
+polling; missing or stale discovery fails closed. Discovery never grants ownership.
+Generation logs are private runtime data and may contain sensitive backend output;
+do not publish them. Automatic retention/rotation is not part of this slice.
+
+Reconnect starts a transport connection only. It does not replay MCP operations.
+Remote sessions may be lost; a lost response can still mean outcome unknown.
+Clients must not retry mutations merely because the tunnel was replaced.
+
+The opt-in compatibility smoke uses the installed v0.0.14 binary with a private
+CODEX_HOME, private state and a local control-plane stub:
+
+```powershell
+node tests/host-breakglass-tunnel-ownership-smoke.mjs
+```
+
+It checks real sidecar job membership, listener ownership, root-only failure,
+confirmed cleanup and a new ready generation. It does **not** establish real
+OpenAI control-plane or ChatGPT connector acceptance; that remains a separately
+authorized live gate. Production configuration and processes must remain untouched
+when running this smoke.
 
 ## Validation
 

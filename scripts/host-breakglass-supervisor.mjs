@@ -89,9 +89,7 @@ async function preflightConfig() {
   for (const name of ["CONTROL_PLANE_TUNNEL_ID", "CONTROL_PLANE_API_KEY"]) {
     if (!values[name]?.trim()) return { ok: false, reason: `${name} missing` };
   }
-  const binary = values.GPT_HOST_BREAKGLASS_TUNNEL_CLIENT_BIN?.trim() || "C:\\Tools\\openai-tunnel-client\\v0.0.14\\tunnel-client.exe";
-  try { await stat(binary); }
-  catch { return { ok: false, reason: "tunnel-client binary missing" }; }
+  // Tunnel binary availability belongs to the connector-local tunnel generation.
 
   const configPath = resolve(values.GPT_HOST_BREAKGLASS_CONFIG?.trim() || join(repoRoot, "config.host-breakglass.local.json"));
   let config;

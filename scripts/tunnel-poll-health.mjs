@@ -34,10 +34,12 @@ export async function probeTunnelPollHealth(healthBase, {
   staleMs = 180000,
   timeoutMs = 2000,
   nowMs = Date.now(),
+  signal,
   fetchImpl = fetch
 } = {}) {
   const base = assertLoopbackHealthBase(healthBase);
-  const response = await fetchImpl(`${base}/metrics`, { signal: AbortSignal.timeout(timeoutMs) });
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const response = await fetchImpl(`${base}/metrics`, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
   if (!response.ok) throw new Error(`tunnel-client metrics probe failed status=${response.status}`);
   const body = await response.text();
   if (body.length > 2 * 1024 * 1024) throw new Error('tunnel-client metrics response exceeded 2 MiB');

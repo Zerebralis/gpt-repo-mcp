@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import net from "node:net";
 import { probeTunnelPollHealth } from "./tunnel-poll-health.mjs";
+import { readReadyTunnelDiscovery } from './host-breakglass-tunnel-discovery.mjs';
 
 const coreOnly = process.argv.includes("--core-only");
 const stateDir = process.env.GPT_HOST_BREAKGLASS_STATE_DIR ?? join(process.env.LOCALAPPDATA ?? process.cwd(), "gpt-repo-host-breakglass");
@@ -16,7 +17,6 @@ const tunnelClient = process.env.GPT_HOST_BREAKGLASS_TUNNEL_CLIENT_BIN
   ?? envValues.GPT_HOST_BREAKGLASS_TUNNEL_CLIENT_BIN
   ?? "C:\\Tools\\openai-tunnel-client\\v0.0.14\\tunnel-client.exe";
 const tunnelPollStaleMs = Number(process.env.GPT_HOST_BREAKGLASS_TUNNEL_POLL_STALE_MS ?? envValues.GPT_HOST_BREAKGLASS_TUNNEL_POLL_STALE_MS ?? 180000);
-const tunnelHealthUrlFile = join(stateDir, "openai-tunnel-health.url");
 const report = { ok: true, core_ok: true, gui_ready: true, transport_ready: true, config: configPath, checks: [] };
 let hostConfig;
 
@@ -87,10 +87,13 @@ try {
 }
 let tunnelHealthBase = null;
 try {
-  tunnelHealthBase = (await readFile(tunnelHealthUrlFile, "utf8")).trim();
+  const state = await readReadyTunnelDiscovery(stateDir, process.env.GPT_HOST_BREAKGLASS_STATE_PATH ?? join(stateDir, 'connector-state.json'));
+  tunnelHealthBase = state.health_base_url;
+  const ready = await fetch(tunnelHealthBase + '/readyz', {signal: AbortSignal.timeout(2000)});
+  if (!ready.ok) throw new Error('Tunnel readiness is unhealthy');
 } catch (error) {
-  const missing = error && typeof error === "object" && "code" in error && error.code === "ENOENT";
-  check("transport", "control_plane_poll", missing, missing ? "live tunnel not observed" : (error instanceof Error ? error.message : String(error)));
+  tunnelHealthBase = null;
+  check("transport", "control_plane_poll", false, error instanceof Error ? error.message : String(error));
 }
 if (tunnelHealthBase !== null) {
   try {
