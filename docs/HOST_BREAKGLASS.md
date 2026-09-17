@@ -433,6 +433,15 @@ probe retry or MCP request replay. Session IDs are not published. The watchdog's
 SDK dependency is bundled into the release, preserving out-of-repository startup
 without `node_modules` or `NODE_PATH`.
 
+The private watchdog intentionally does not open the optional standalone MCP
+GET/SSE notification stream. Its fetch wrapper answers GET requests to exactly
+its own loopback MCP URL locally with HTTP 405, which the SDK treats as an
+unsupported optional channel. This avoids idle background SSE body timeouts
+being mistaken for functional probe failures. Initialize, notifications and
+tool-call POSTs (including SSE responses to POST), session DELETE and other
+methods still use the real transport. Client errors and closes still invalidate
+the connection; probe deadlines, failure thresholds and recovery are unchanged.
+
 Each watchdog instance is bound to one Core spawn generation and each in-flight
 probe has its own identity/cancellation scope. Shutdown fences callbacks, cancels
 the next probe and aborts outstanding I/O before the existing tunnel/Core cleanup.

@@ -1,4 +1,4 @@
-/* global AbortController, AbortSignal, URL, fetch, setTimeout, clearTimeout */
+/* global AbortController, AbortSignal, URL, Request, Response, fetch, setTimeout, clearTimeout */
 import { randomUUID } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -95,13 +95,35 @@ export function assertCoreProbeResult(response, pid) {
   }
 }
 
+// This private client needs tool responses, not server-initiated notifications.
+// SDK 1.29 treats 405 on its optional standalone GET as unsupported. POST SSE
+// responses still use the real transport, as do all other URLs and methods.
+export function createCoreProbeFetch(url, signal, networkFetch = fetch) {
+  const endpoint = new URL(url);
+  if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || endpoint.pathname !== '/mcp' || endpoint.search || endpoint.hash || endpoint.username || endpoint.password) {
+    throw Error('Core probe requires its private loopback MCP URL');
+  }
+  return async (target, init) => {
+    const request = target instanceof Request ? target : undefined;
+    const targetUrl = new URL(request ? request.url : target);
+    const method = String(init?.method ?? request?.method ?? 'GET').toUpperCase();
+    const requestSignal = init?.signal ?? request?.signal;
+    const combined = AbortSignal.any([signal, ...(requestSignal ? [requestSignal] : [])]);
+    combined.throwIfAborted();
+    if (targetUrl.href === endpoint.href && method === 'GET') {
+      return new Response(null, { status: 405, statusText: 'Method Not Allowed', headers: { Allow: 'POST, DELETE' } });
+    }
+    return networkFetch(target, { ...init, redirect: 'error', signal: combined });
+  };
+}
+
 function openProbeConnection(url) {
   const abort = new AbortController();
   const client = new Client({ name: 'host-breakglass-core-liveness', version: '1' }, { capabilities: {} });
   const transport = new StreamableHTTPClientTransport(new URL(url), {
     // Recovery belongs to the watchdog. Never resume/replay a failed request.
     reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 },
-    fetch: (target, init) => fetch(target, { ...init, redirect: 'error', signal: AbortSignal.any([abort.signal, ...(init?.signal ? [init.signal] : [])]) })
+    fetch: createCoreProbeFetch(url, abort.signal)
   });
   let ready, broken = false, closed = false;
   client.onerror = () => { broken = true; };
@@ -121,7 +143,7 @@ function openProbeConnection(url) {
       const sessionId = transport.sessionId;
       abort.abort();
       await client.close().catch(() => {});
-      // Retire only this private session. Abort the GET stream first, then use a
+      // Retire only this private session. Abort outstanding I/O first, then use a
       // separate bounded DELETE because the transport's lifetime signal is closed.
       if (sessionId) await fetch(url, { method: 'DELETE', redirect: 'error', headers: { 'mcp-session-id': sessionId }, signal: AbortSignal.timeout(500) })
         .then(response => response.body?.cancel()).catch(() => {});
