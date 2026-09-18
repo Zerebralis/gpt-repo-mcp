@@ -19,6 +19,7 @@ const maxSessions = readBoundedInteger("GPT_HOST_BREAKGLASS_MAX_SESSIONS", 100, 
 const sessionIdleTtlMs = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS", 10 * 60_000, 1_000, 24 * 60 * 60_000);
 const sessionPressureIdleTtlMs = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS", Math.min(60_000, sessionIdleTtlMs), 1_000, sessionIdleTtlMs);
 const sessionSoftTarget = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET", Math.max(1, Math.floor(maxSessions * 0.8)), 1, maxSessions);
+const sessionPressureHighWatermark = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_PRESSURE_HIGH_WATERMARK", Math.max(sessionSoftTarget, Math.ceil(maxSessions * 0.9)), sessionSoftTarget, maxSessions);
 
 if (!isLoopback(host) && !publicPathToken) {
   throw new Error("External host-breakglass bind requires GPT_HOST_BREAKGLASS_PUBLIC_PATH_TOKEN.");
@@ -42,12 +43,12 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: "2mb" }));
 
-const transports = new TransportSessionStore<StreamableHTTPServerTransport>({ maxSessions, idleTtlMs: sessionIdleTtlMs, pressureIdleTtlMs: sessionPressureIdleTtlMs, pressureSoftTarget: sessionSoftTarget });
+const transports = new TransportSessionStore<StreamableHTTPServerTransport>({ maxSessions, idleTtlMs: sessionIdleTtlMs, pressureIdleTtlMs: sessionPressureIdleTtlMs, pressureSoftTarget: sessionSoftTarget, pressureHighWatermark: sessionPressureHighWatermark, emergencyReclaimAtCapacity: true });
 const mcpRoutes = buildMcpRoutePatterns(publicPathToken);
 
 app.get("/health", (_req, res) => {
   const stats = transports.stats();
-  res.json({ ok: true, name: "gpt-repo-host-breakglass", mode: config.mode, tool_count: HOST_BREAKGLASS_TOOL_COUNT, computer_use: config.computer_use.enabled, mcp_sessions: { ...stats, capacity: maxSessions, soft_target: sessionSoftTarget, idle_ttl_ms: sessionIdleTtlMs, pressure_idle_ttl_ms: sessionPressureIdleTtlMs } });
+  res.json({ ok: true, name: "gpt-repo-host-breakglass", mode: config.mode, tool_count: HOST_BREAKGLASS_TOOL_COUNT, computer_use: config.computer_use.enabled, mcp_sessions: { ...stats, capacity: maxSessions, soft_target: sessionSoftTarget, pressure_high_watermark: sessionPressureHighWatermark, idle_ttl_ms: sessionIdleTtlMs, pressure_idle_ttl_ms: sessionPressureIdleTtlMs } });
 });
 
 function authorized(req: Request, res: Response): boolean {
@@ -86,7 +87,11 @@ app.post(mcpRoutes, async (req: Request, res: Response) => {
       };
       await createHostBreakglassMcpServer(context).connect(transport);
     } else if (!transport) {
-      res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Bad Request: no valid MCP session" }, id: null });
+      if (typeof sessionId === "string") {
+        res.status(404).json({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: (req.body as { id?: unknown }).id ?? null });
+      } else {
+        res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Bad Request: missing MCP session id" }, id: (req.body as { id?: unknown }).id ?? null });
+      }
       return;
     }
     await transport.handleRequest(req, res, req.body);
@@ -105,7 +110,8 @@ app.get(mcpRoutes, async (req: Request, res: Response) => {
   const lease = typeof sessionId === "string" ? transports.acquire(sessionId) : undefined;
   const transport = lease?.transport;
   if (!transport) {
-    res.status(400).send("Invalid or missing MCP session id");
+    if (typeof sessionId === "string") res.status(404).send("Session not found");
+    else res.status(400).send("Missing MCP session id");
     return;
   }
   try {
@@ -123,7 +129,8 @@ app.delete(mcpRoutes, async (req: Request, res: Response) => {
   const lease = typeof sessionId === "string" ? transports.acquire(sessionId) : undefined;
   const transport = lease?.transport;
   if (!transport || typeof sessionId !== "string") {
-    res.status(400).send("Invalid or missing MCP session id");
+    if (typeof sessionId === "string") res.status(404).send("Session not found");
+    else res.status(400).send("Missing MCP session id");
     return;
   }
   try {
