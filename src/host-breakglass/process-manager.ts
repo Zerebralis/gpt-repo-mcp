@@ -195,9 +195,9 @@ function describeSpawnError(error: Error, input: { executable: string; cwd: stri
   const code = (error as NodeJS.ErrnoException)?.code;
   if (code === "ENOENT") {
     if (!existsSync(input.cwd)) {
-      return `HOST_PROCESS_CWD_NOT_FOUND: Working directory does not exist: ${input.cwd}. Refresh the repository/worktree path before retrying; do not treat this as an executable-not-found failure.`;
+      return `HOST_PROCESS_CWD_NOT_FOUND: Working directory does not exist: ${input.cwd}. The cwd is stale or was removed; refresh the repository/worktree path before retrying. Do not treat this as an executable-not-found failure.`;
     }
-    return `HOST_PROCESS_EXECUTABLE_NOT_FOUND: Executable could not be resolved: ${input.executable}. The working directory still exists.`;
+    return `HOST_PROCESS_EXECUTABLE_NOT_FOUND: Executable could not be resolved: ${input.executable}. No missing cwd was observed when this spawn failure was classified.`;
   }
   return error.message;
 }

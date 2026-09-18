@@ -94,7 +94,7 @@ describe("Host Breakglass process cwd diagnostics", () => {
 
     expect(view.status).toBe("failed");
     expect(view.stderr_tail).toContain("HOST_PROCESS_EXECUTABLE_NOT_FOUND");
-    expect(view.stderr_tail).toContain("The working directory still exists");
+    expect(view.stderr_tail).toContain("No missing cwd was observed when this spawn failure was classified");
     expect(view.stderr_tail).not.toContain("HOST_PROCESS_CWD_NOT_FOUND");
   });
 
