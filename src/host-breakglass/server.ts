@@ -87,7 +87,11 @@ app.post(mcpRoutes, async (req: Request, res: Response) => {
       };
       await createHostBreakglassMcpServer(context).connect(transport);
     } else if (!transport) {
-      res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Bad Request: no valid MCP session" }, id: null });
+      if (typeof sessionId === "string") {
+        res.status(404).json({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: (req.body as { id?: unknown }).id ?? null });
+      } else {
+        res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Bad Request: missing MCP session id" }, id: (req.body as { id?: unknown }).id ?? null });
+      }
       return;
     }
     await transport.handleRequest(req, res, req.body);
@@ -106,7 +110,8 @@ app.get(mcpRoutes, async (req: Request, res: Response) => {
   const lease = typeof sessionId === "string" ? transports.acquire(sessionId) : undefined;
   const transport = lease?.transport;
   if (!transport) {
-    res.status(400).send("Invalid or missing MCP session id");
+    if (typeof sessionId === "string") res.status(404).send("Session not found");
+    else res.status(400).send("Missing MCP session id");
     return;
   }
   try {
@@ -124,7 +129,8 @@ app.delete(mcpRoutes, async (req: Request, res: Response) => {
   const lease = typeof sessionId === "string" ? transports.acquire(sessionId) : undefined;
   const transport = lease?.transport;
   if (!transport || typeof sessionId !== "string") {
-    res.status(400).send("Invalid or missing MCP session id");
+    if (typeof sessionId === "string") res.status(404).send("Session not found");
+    else res.status(400).send("Missing MCP session id");
     return;
   }
   try {

@@ -58,7 +58,8 @@ New policy:
 - when a new admission would cross the high watermark, only sufficiently old, idle, non-in-flight sessions are reclaimed toward the soft target;
 - if the hard cap is occupied only by recent/in-flight sessions, the new admission is rejected rather than silently closing a protected existing session;
 - bounded in-memory retirement provenance distinguishes later reuse attempts after pressure reclaim, normal expiry, and unknown-session misses without exposing session IDs; the provenance cache is capped at `4 * maxSessions` entries (minimum 32) and evicts oldest retirement markers first;
-- `/health` exposes the new high watermark and cumulative reuse/miss counters.
+- `/health` exposes the new high watermark and cumulative reuse/miss counters;
+- protocol recovery is corrected: requests that carry an unknown/retired `Mcp-Session-Id` return HTTP **404 `Session not found`**, as required by the Streamable HTTP session contract; only non-initialization requests with no session ID return HTTP 400. This gives an MCP client/gateway the correct signal that it must establish a new session instead of treating the request itself as malformed.
 
 Relevant defaults:
 
