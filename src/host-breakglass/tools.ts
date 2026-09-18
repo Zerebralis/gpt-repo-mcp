@@ -47,7 +47,7 @@ export function buildHostShellInvocation(command: string): { executable: string;
 }
 
 export function registerHostBreakglassTools(server: McpServer, context: HostBreakglassContext): void {
-  server.registerTool("host_list_roots", { title: "List host roots", description: "List roots and capabilities approved for breakglass use.", inputSchema: empty, annotations: readOnlyAnnotations }, async () => executeTool(context, "host_list_roots", async () => ({ mode: context.config.mode, full_host_access: context.config.full_host_access, roots: context.config.roots })));
+  server.registerTool("host_list_roots", { title: "List host roots", description: "Canonical read-only attachment handshake. List roots and capabilities approved for breakglass use; a successful call proves Host Breakglass is reachable from the current chat/tool context.", inputSchema: empty, annotations: readOnlyAnnotations }, async () => executeTool(context, "host_list_roots", async () => ({ mode: context.config.mode, full_host_access: context.config.full_host_access, roots: context.config.roots })));
 
   server.registerTool("host_stat", { title: "Host path status", description: "Read metadata for an approved absolute host path.", inputSchema: { path: P }, annotations: readOnlyAnnotations }, async (args) => executeTool(context, "host_stat", () => hostStat(context, args.path)));
 
