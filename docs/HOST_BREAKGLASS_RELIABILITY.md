@@ -41,6 +41,37 @@ The later session-headroom hardening addresses the sticky `100/100` pattern seen
 
 Do not "fix" this incident merely by increasing the pool limit. A larger pool only postpones exhaustion if lifecycle pressure is the underlying problem. Likewise, `active == capacity` is not sufficient by itself to prove a failure: distinguish a pool that is still reclaiming and admitting from one that is actually rejecting admissions.
 
+### Follow-up incident: session continuity loss under aggressive headroom reclaim — 2026-09-18
+
+A later parallel-agent incident exposed a second failure mode in the same session pool. Multiple chats intermittently saw generic `Connection failed` errors while all local Breakglass process identities remained stable, `/health` stayed HTTP 200, the tunnel generation remained `ready`, and the tunnel loopback `/readyz` stayed 200.
+
+The production pool repeatedly sat at the old soft target of 80 sessions with a large reclaimable idle cohort and thousands of cumulative pressure reclaims. The old policy used the same value as both the pressure trigger and the cleanup target, and considered a session pressure-old after only 60 seconds. Under sustained parallel ChatGPT activity, every new admission above 80 could therefore be paid for by closing another idle 60+-second session. A chat that later reused that session could surface a generic connector failure even though the tunnel process itself never restarted.
+
+This correlation is strong but the pre-fix runtime did not retain enough retirement provenance to prove which exact missing session had been pressure-reclaimed. The continuity hardening therefore fixes the unsafe mechanism and adds bounded aggregate evidence for future confirmation.
+
+New policy:
+
+- normal idle expiry remains unchanged at 10 minutes by default;
+- the default pressure-idle threshold is 80% of the normal TTL (8 minutes at the default 10-minute TTL), rather than 60 seconds;
+- pressure cleanup uses hysteresis: default soft target 90 sessions, default high watermark 95 sessions;
+- periodic cleanup does nothing at or below the high watermark;
+- when a new admission would cross the high watermark, only sufficiently old, idle, non-in-flight sessions are reclaimed toward the soft target;
+- if the hard cap is occupied only by recent/in-flight sessions, the new admission is rejected rather than silently closing a protected existing session;
+- bounded in-memory retirement provenance distinguishes later reuse attempts after pressure reclaim, normal expiry, and unknown-session misses without exposing session IDs;
+- `/health` exposes the new high watermark and cumulative reuse/miss counters.
+
+Relevant defaults:
+
+```text
+GPT_HOST_BREAKGLASS_MAX_SESSIONS=100
+GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS=600000
+GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS=480000
+GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET=90
+GPT_HOST_BREAKGLASS_SESSION_PRESSURE_HIGH_WATERMARK=95
+```
+
+Operationally, a single generic `Connection failed` must not be called a tunnel failure unless tunnel state or poll-readiness evidence actually degraded. A mutating request must never be blindly replayed after an ambiguous connection failure; reconcile state first.
+
 ## Failure mode B: tunnel is locally ready but invisible to the control plane
 
 ### External symptom

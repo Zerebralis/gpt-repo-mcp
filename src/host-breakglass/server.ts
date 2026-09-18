@@ -17,8 +17,9 @@ const configPath = resolve(process.env.GPT_HOST_BREAKGLASS_CONFIG ?? "config.hos
 const publicPathToken = process.env.GPT_HOST_BREAKGLASS_PUBLIC_PATH_TOKEN;
 const maxSessions = readBoundedInteger("GPT_HOST_BREAKGLASS_MAX_SESSIONS", 100, 1, 250);
 const sessionIdleTtlMs = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS", 10 * 60_000, 1_000, 24 * 60 * 60_000);
-const sessionPressureIdleTtlMs = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS", Math.min(60_000, sessionIdleTtlMs), 1_000, sessionIdleTtlMs);
-const sessionSoftTarget = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET", Math.max(1, Math.floor(maxSessions * 0.8)), 1, maxSessions);
+const sessionPressureIdleTtlMs = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS", Math.max(1_000, Math.min(sessionIdleTtlMs, Math.floor(sessionIdleTtlMs * 0.8))), 1_000, sessionIdleTtlMs);
+const sessionSoftTarget = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET", Math.max(1, Math.floor(maxSessions * 0.9)), 1, maxSessions);
+const sessionPressureHighWatermark = readBoundedInteger("GPT_HOST_BREAKGLASS_SESSION_PRESSURE_HIGH_WATERMARK", Math.max(sessionSoftTarget, Math.ceil(maxSessions * 0.95)), sessionSoftTarget, maxSessions);
 
 if (!isLoopback(host) && !publicPathToken) {
   throw new Error("External host-breakglass bind requires GPT_HOST_BREAKGLASS_PUBLIC_PATH_TOKEN.");
@@ -42,12 +43,12 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: "2mb" }));
 
-const transports = new TransportSessionStore<StreamableHTTPServerTransport>({ maxSessions, idleTtlMs: sessionIdleTtlMs, pressureIdleTtlMs: sessionPressureIdleTtlMs, pressureSoftTarget: sessionSoftTarget });
+const transports = new TransportSessionStore<StreamableHTTPServerTransport>({ maxSessions, idleTtlMs: sessionIdleTtlMs, pressureIdleTtlMs: sessionPressureIdleTtlMs, pressureSoftTarget: sessionSoftTarget, pressureHighWatermark: sessionPressureHighWatermark });
 const mcpRoutes = buildMcpRoutePatterns(publicPathToken);
 
 app.get("/health", (_req, res) => {
   const stats = transports.stats();
-  res.json({ ok: true, name: "gpt-repo-host-breakglass", mode: config.mode, tool_count: HOST_BREAKGLASS_TOOL_COUNT, computer_use: config.computer_use.enabled, mcp_sessions: { ...stats, capacity: maxSessions, soft_target: sessionSoftTarget, idle_ttl_ms: sessionIdleTtlMs, pressure_idle_ttl_ms: sessionPressureIdleTtlMs } });
+  res.json({ ok: true, name: "gpt-repo-host-breakglass", mode: config.mode, tool_count: HOST_BREAKGLASS_TOOL_COUNT, computer_use: config.computer_use.enabled, mcp_sessions: { ...stats, capacity: maxSessions, soft_target: sessionSoftTarget, pressure_high_watermark: sessionPressureHighWatermark, idle_ttl_ms: sessionIdleTtlMs, pressure_idle_ttl_ms: sessionPressureIdleTtlMs } });
 });
 
 function authorized(req: Request, res: Response): boolean {
