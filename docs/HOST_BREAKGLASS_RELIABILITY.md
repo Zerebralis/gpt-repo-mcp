@@ -41,24 +41,28 @@ The later session-headroom hardening addresses the sticky `100/100` pattern seen
 
 Do not "fix" this incident merely by increasing the pool limit. A larger pool only postpones exhaustion if lifecycle pressure is the underlying problem. Likewise, `active == capacity` is not sufficient by itself to prove a failure: distinguish a pool that is still reclaiming and admitting from one that is actually rejecting admissions.
 
-### Follow-up incident: session continuity loss under aggressive headroom reclaim — 2026-09-18
+### Follow-up incident: session continuity vs. hard-cap saturation — 2026-09-18
 
 A later parallel-agent incident exposed a second failure mode in the same session pool. Multiple chats intermittently saw generic `Connection failed` errors while all local Breakglass process identities remained stable, `/health` stayed HTTP 200, the tunnel generation remained `ready`, and the tunnel loopback `/readyz` stayed 200.
 
 The production pool repeatedly sat at the old soft target of 80 sessions with a large reclaimable idle cohort and thousands of cumulative pressure reclaims. The old policy used the same value as both the pressure trigger and the cleanup target, and considered a session pressure-old after only 60 seconds. Under sustained parallel ChatGPT activity, every new admission above 80 could therefore be paid for by closing another idle 60+-second session. A chat that later reused that session could surface a generic connector failure even though the tunnel process itself never restarted.
 
-This correlation is strong but the pre-fix runtime did not retain enough retirement provenance to prove which exact missing session had been pressure-reclaimed. The continuity hardening therefore fixes the unsafe mechanism and adds bounded aggregate evidence for future confirmation.
+This correlation is strong but the pre-fix runtime did not retain enough retirement provenance to prove which exact missing session had been pressure-reclaimed.
 
-New policy:
+The first continuity hotfix tried to preserve sessions much longer (8-minute pressure TTL, soft target 90, high watermark 95). It passed deterministic and R2 review, but **failed live acceptance** under real parallel-agent reconnect load: the pool filled to `100/100` and emitted sustained `MCP session capacity reached` rejections. It was rolled back to Stable. This proved that long blanket retention is not viable on the real workload.
+
+The live failure sharpened the protocol boundary: reclaim is required to keep the bounded pool healthy. The stale-session path must instead be explicit and recoverable: an unknown/retired `Mcp-Session-Id` returns protocol-correct 404 rather than the former 400.
+
+Refined V2 policy:
 
 - normal idle expiry remains unchanged at 10 minutes by default;
-- the default pressure-idle threshold is 80% of the normal TTL (8 minutes at the default 10-minute TTL), rather than 60 seconds;
-- pressure cleanup uses hysteresis: default soft target 90 sessions, default high watermark 95 sessions;
-- periodic cleanup does nothing at or below the high watermark;
-- when a new admission would cross the high watermark, only sufficiently old, idle, non-in-flight sessions are reclaimed toward the soft target;
-- if the hard cap is occupied only by recent/in-flight sessions, the new admission is rejected rather than silently closing a protected existing session;
-- bounded in-memory retirement provenance distinguishes later reuse attempts after pressure reclaim, normal expiry, and unknown-session misses without exposing session IDs; the provenance cache is capped at `4 * maxSessions` entries (minimum 32) and evicts oldest retirement markers first;
-- `/health` exposes the new high watermark and cumulative reuse/miss counters;
+- ordinary pressure age is 60 seconds so sustained churn cannot pin the pool at the hard cap;
+- pressure cleanup uses hysteresis: default soft target 80 sessions, default high watermark 90 sessions;
+- periodic cleanup does nothing at or below 90;
+- when a new admission would cross 90, only pressure-old, idle, non-in-flight sessions are reclaimed toward 80;
+- Host Breakglass additionally opts into hard-cap emergency reclaim: if the pool reaches 100 before any session is pressure-old, the oldest idle/non-in-flight sessions are reclaimed only far enough to restore high-watermark headroom; if all capacity is genuinely in-flight/reserved, the new admission is rejected;
+- bounded in-memory retirement provenance distinguishes later reuse attempts after pressure reclaim, emergency reclaim, normal expiry, and unknown-session misses without exposing session IDs; the provenance cache is capped at `4 * maxSessions` entries (minimum 32) and evicts oldest retirement markers first;
+- `/health` exposes the high watermark and cumulative pressure/emergency reclaim and reuse/miss counters;
 - protocol recovery is corrected: requests that carry an unknown/retired `Mcp-Session-Id` return HTTP **404 `Session not found`**, as required by the Streamable HTTP session contract; only non-initialization requests with no session ID return HTTP 400. This gives an MCP client/gateway the correct signal that it must establish a new session instead of treating the request itself as malformed.
 
 Relevant defaults:
@@ -66,10 +70,12 @@ Relevant defaults:
 ```text
 GPT_HOST_BREAKGLASS_MAX_SESSIONS=100
 GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS=600000
-GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS=480000
-GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET=90
-GPT_HOST_BREAKGLASS_SESSION_PRESSURE_HIGH_WATERMARK=95
+GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS=60000
+GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET=80
+GPT_HOST_BREAKGLASS_SESSION_PRESSURE_HIGH_WATERMARK=90
 ```
+
+Validation now includes both a sustained-churn HTTP test and a cold-reconnect-burst test. The cold-burst case fills the pool with sessions that are still younger than the ordinary pressure TTL, then proves Host Breakglass can recover idle headroom without a 503 and that a retired session subsequently receives protocol-correct 404.
 
 Operationally, a single generic `Connection failed` must not be called a tunnel failure unless tunnel state or poll-readiness evidence actually degraded. A mutating request must never be blindly replayed after an ambiguous connection failure; reconcile state first.
 

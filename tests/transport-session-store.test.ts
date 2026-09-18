@@ -11,6 +11,7 @@ class TestTransport {
 
 const emptyMissCounters = {
   pressure_reclaim_reuse_attempts: 0,
+  emergency_reclaim_reuse_attempts: 0,
   normal_expiry_reuse_attempts: 0,
   unknown_session_misses: 0
 };
@@ -33,6 +34,7 @@ describe("TransportSessionStore", () => {
       committed: 2,
       normal_expired: 0,
       pressure_reclaimed: 0,
+      emergency_reclaimed: 0,
       admission_rejected: 1,
       ...emptyMissCounters
     });
@@ -191,6 +193,67 @@ describe("TransportSessionStore", () => {
     expect(store.size).toBe(4);
     expect(transports.every((transport) => transport.closeCalls === 0)).toBe(true);
     expect(store.stats().cumulative.admission_rejected).toBe(1);
+  });
+
+  test("host-style emergency reclaim frees hard-cap headroom from idle sessions without waiting for pressure age", async () => {
+    let now = 1_000;
+    const store = new TransportSessionStore<TestTransport>({
+      maxSessions: 5,
+      idleTtlMs: 10_000,
+      pressureIdleTtlMs: 5_000,
+      pressureSoftTarget: 3,
+      pressureHighWatermark: 4,
+      emergencyReclaimAtCapacity: true,
+      now: () => now
+    });
+    const transports = Array.from({ length: 5 }, () => new TestTransport());
+    for (const [index, transport] of transports.entries()) {
+      (await store.reserve())?.commit(`recent-${index}`, transport);
+    }
+
+    now = 1_100;
+    const replacement = await store.reserve();
+    expect(replacement).toBeDefined();
+    expect(store.size).toBe(3);
+    expect(transports.filter((transport) => transport.closeCalls === 1)).toHaveLength(2);
+    replacement?.commit("replacement", new TestTransport());
+    expect(store.size).toBe(4);
+    expect(store.stats().cumulative).toMatchObject({
+      emergency_reclaimed: 2,
+      pressure_reclaimed: 0,
+      admission_rejected: 0
+    });
+
+    expect(store.get("recent-0")).toBeUndefined();
+    expect(store.stats().cumulative.emergency_reclaim_reuse_attempts).toBe(1);
+  });
+
+  test("host-style emergency reclaim never closes in-flight sessions and rejects only when no idle slot can be recovered", async () => {
+    const store = new TransportSessionStore<TestTransport>({
+      maxSessions: 2,
+      idleTtlMs: 10_000,
+      pressureIdleTtlMs: 5_000,
+      pressureSoftTarget: 1,
+      pressureHighWatermark: 1,
+      emergencyReclaimAtCapacity: true
+    });
+    const first = new TestTransport();
+    const second = new TestTransport();
+    (await store.reserve())?.commit("first", first);
+    (await store.reserve())?.commit("second", second);
+    const leaseA = store.acquire("first");
+    const leaseB = store.acquire("second");
+
+    expect(await store.reserve()).toBeUndefined();
+    expect(first.closeCalls).toBe(0);
+    expect(second.closeCalls).toBe(0);
+    expect(store.stats().cumulative).toMatchObject({
+      emergency_reclaimed: 0,
+      admission_rejected: 1
+    });
+
+    leaseA?.release();
+    leaseB?.release();
   });
 
   test("records a client reuse attempt after pressure reclamation", async () => {

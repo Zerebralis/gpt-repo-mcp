@@ -46,7 +46,7 @@ async function waitForHealth(url) {
   throw new Error("Host Breakglass fixture did not become healthy");
 }
 
-async function fixture() {
+async function fixture(overrides = {}) {
   const root = await mkdtemp(join(tmpdir(), "host-breakglass-session-http-"));
   tempRoots.push(root);
   const configPath = join(root, "config.json");
@@ -67,11 +67,11 @@ async function fixture() {
       GPT_HOST_BREAKGLASS_CONFIG: configPath,
       GPT_HOST_BREAKGLASS_HOST: "127.0.0.1",
       GPT_HOST_BREAKGLASS_PORT: String(port),
-      GPT_HOST_BREAKGLASS_MAX_SESSIONS: "10",
-      GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET: "8",
-      GPT_HOST_BREAKGLASS_SESSION_PRESSURE_HIGH_WATERMARK: "9",
-      GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS: "10000",
-      GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS: "8000"
+      GPT_HOST_BREAKGLASS_MAX_SESSIONS: String(overrides.maxSessions ?? 10),
+      GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET: String(overrides.softTarget ?? 8),
+      GPT_HOST_BREAKGLASS_SESSION_PRESSURE_HIGH_WATERMARK: String(overrides.highWatermark ?? 9),
+      GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS: String(overrides.idleTtlMs ?? 10000),
+      GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS: String(overrides.pressureIdleTtlMs ?? 8000)
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true
@@ -80,6 +80,43 @@ async function fixture() {
   const base = `http://127.0.0.1:${port}`;
   await waitForHealth(base + "/health");
   return { base };
+}
+
+async function initializeSession(base, id) {
+  const response = await fetch(base + "/mcp", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "accept": "application/json, text/event-stream"
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "session-churn-test", version: "1" }
+      }
+    })
+  });
+  expect(response.status).toBe(200);
+  const sessionId = response.headers.get("mcp-session-id");
+  expect(sessionId).toBeTruthy();
+  await response.text();
+
+  const initialized = await fetch(base + "/mcp", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "accept": "application/json, text/event-stream",
+      "mcp-session-id": sessionId
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })
+  });
+  expect([200, 202]).toContain(initialized.status);
+  await initialized.text();
+  return sessionId;
 }
 
 describe("Host Breakglass Streamable HTTP session errors", () => {
@@ -135,4 +172,99 @@ describe("Host Breakglass Streamable HTTP session errors", () => {
     const health = await (await fetch(base + "/health")).json();
     expect(health.mcp_sessions.cumulative.unknown_session_misses).toBe(3);
   });
+
+  test("cold reconnect burst uses emergency idle reclaim instead of hard-cap admission failure", async () => {
+    const { base } = await fixture({
+      maxSessions: 10,
+      softTarget: 8,
+      highWatermark: 9,
+      idleTtlMs: 10_000,
+      pressureIdleTtlMs: 8_000
+    });
+
+    const initial = [];
+    for (let index = 0; index < 10; index += 1) {
+      initial.push(await initializeSession(base, 500 + index));
+    }
+
+    let health = await (await fetch(base + "/health")).json();
+    expect(health.mcp_sessions.active).toBe(10);
+    expect(health.mcp_sessions.cumulative.pressure_reclaimed).toBe(0);
+    expect(health.mcp_sessions.cumulative.admission_rejected).toBe(0);
+
+    const extra = await initializeSession(base, 999);
+    expect(extra).toBeTruthy();
+
+    health = await (await fetch(base + "/health")).json();
+    expect(health.mcp_sessions.active).toBeLessThanOrEqual(9);
+    expect(health.mcp_sessions.cumulative.emergency_reclaimed).toBeGreaterThan(0);
+    expect(health.mcp_sessions.cumulative.admission_rejected).toBe(0);
+
+    const retiredReuse = await fetch(base + "/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "accept": "application/json, text/event-stream",
+        "mcp-session-id": initial[0]
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1000, method: "tools/list", params: {} })
+    });
+    expect(retiredReuse.status).toBe(404);
+
+    health = await (await fetch(base + "/health")).json();
+    expect(health.mcp_sessions.cumulative.emergency_reclaim_reuse_attempts).toBeGreaterThan(0);
+    expect(health.mcp_sessions.cumulative.admission_rejected).toBe(0);
+  });
+
+  test("sustained churn reclaims old idle sessions before hard-cap saturation and stale reuse gets 404", async () => {
+    const { base } = await fixture({
+      maxSessions: 10,
+      softTarget: 8,
+      highWatermark: 9,
+      idleTtlMs: 10_000,
+      pressureIdleTtlMs: 1_000
+    });
+
+    const initial = [];
+    for (let index = 0; index < 10; index += 1) {
+      initial.push(await initializeSession(base, index + 1));
+    }
+
+    let health = await (await fetch(base + "/health")).json();
+    expect(health.mcp_sessions.active).toBe(10);
+    expect(health.mcp_sessions.cumulative.admission_rejected).toBe(0);
+
+    for (let wave = 0; wave < 4; wave += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      for (let index = 0; index < 5; index += 1) {
+        await initializeSession(base, 100 + wave * 10 + index);
+      }
+      health = await (await fetch(base + "/health")).json();
+      expect(health.mcp_sessions.active).toBeLessThanOrEqual(10);
+      expect(health.mcp_sessions.cumulative.admission_rejected).toBe(0);
+    }
+
+    expect(health.mcp_sessions.cumulative.pressure_reclaimed).toBeGreaterThan(0);
+    expect(health.mcp_sessions.active).toBeLessThanOrEqual(9);
+
+    const retiredReuse = await fetch(base + "/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "accept": "application/json, text/event-stream",
+        "mcp-session-id": initial[0]
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 999, method: "tools/list", params: {} })
+    });
+    expect(retiredReuse.status).toBe(404);
+    expect(await retiredReuse.json()).toMatchObject({
+      jsonrpc: "2.0",
+      id: 999,
+      error: { code: -32001, message: "Session not found" }
+    });
+
+    health = await (await fetch(base + "/health")).json();
+    expect(health.mcp_sessions.cumulative.pressure_reclaim_reuse_attempts).toBeGreaterThan(0);
+    expect(health.mcp_sessions.cumulative.admission_rejected).toBe(0);
+  }, 15_000);
 });
