@@ -275,6 +275,62 @@ describe("TransportSessionStore", () => {
     expect(busy.closeCalls).toBe(1);
   });
 
+  test("concurrent admissions do not over-reclaim or exceed capacity around the high watermark", async () => {
+    let now = 1_000;
+    const store = new TransportSessionStore<TestTransport>({
+      maxSessions: 10,
+      idleTtlMs: 10_000,
+      pressureIdleTtlMs: 100,
+      pressureSoftTarget: 8,
+      pressureHighWatermark: 9,
+      now: () => now
+    });
+    const transports = Array.from({ length: 9 }, () => new TestTransport());
+    for (const [index, transport] of transports.entries()) {
+      (await store.reserve())?.commit(`base-${index}`, transport);
+    }
+
+    now = 1_101;
+    const [first, second] = await Promise.all([store.reserve(), store.reserve()]);
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(transports.filter((transport) => transport.closeCalls === 1)).toHaveLength(2);
+
+    first?.commit("parallel-a", new TestTransport());
+    second?.commit("parallel-b", new TestTransport());
+    expect(store.size).toBe(9);
+    expect(store.stats().cumulative.pressure_reclaimed).toBe(2);
+    expect(store.stats().cumulative.admission_rejected).toBe(0);
+  });
+
+  test("retirement provenance stays bounded while recent retirement reasons remain observable", async () => {
+    let now = 1_000;
+    const store = new TransportSessionStore<TestTransport>({
+      maxSessions: 1,
+      idleTtlMs: 10_000,
+      pressureIdleTtlMs: 1,
+      pressureSoftTarget: 1,
+      pressureHighWatermark: 1,
+      now: () => now
+    });
+    (await store.reserve())?.commit("session-0", new TestTransport());
+
+    for (let index = 1; index < 40; index += 1) {
+      now += 2;
+      const reservation = await store.reserve();
+      expect(reservation).toBeDefined();
+      reservation?.commit(`session-${index}`, new TestTransport());
+    }
+
+    expect(store.get("session-7")).toBeUndefined();
+    expect(store.get("session-0")).toBeUndefined();
+    expect(store.stats().cumulative).toMatchObject({
+      pressure_reclaimed: 39,
+      pressure_reclaim_reuse_attempts: 1,
+      unknown_session_misses: 1
+    });
+  });
+
   test("generic pressure behavior remains admission-driven unless a lower high watermark is configured", async () => {
     let now = 1_000;
     const store = new TransportSessionStore<TestTransport>({

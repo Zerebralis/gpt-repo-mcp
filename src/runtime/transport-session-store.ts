@@ -51,6 +51,7 @@ export class TransportSessionStore<T extends ClosableTransport> {
     this.idleTtlMs = options.idleTtlMs;
     this.pressureIdleTtlMs = options.pressureIdleTtlMs;
     this.pressureSoftTarget = options.pressureSoftTarget ?? Math.max(1, Math.floor(options.maxSessions * 0.8));
+    // Generic callers remain admission-driven unless they explicitly opt into proactive hysteresis.
     this.pressureHighWatermark = options.pressureHighWatermark ?? options.maxSessions;
     this.maxRetiredSessions = Math.max(32, options.maxSessions * 4);
     this.now = options.now ?? Date.now;
