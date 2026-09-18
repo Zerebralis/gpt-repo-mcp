@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { minimalHostEnv } from "./shell-policy.js";
@@ -76,7 +77,7 @@ export class HostProcessManager {
       if (job.status === "running") {
         job.status = "failed";
         job.ended_at = new Date().toISOString();
-        job.stderr_tail = appendTail(job.stderr_tail, Buffer.from(error.message), this.maxOutputBytes);
+        job.stderr_tail = appendTail(job.stderr_tail, Buffer.from(describeSpawnError(error, input)), this.maxOutputBytes);
       }
       if (job.timer) clearTimeout(job.timer);
     });
@@ -188,6 +189,17 @@ export class HostProcessManager {
       this.jobs.delete(job.job_id);
     }
   }
+}
+
+function describeSpawnError(error: Error, input: { executable: string; cwd: string }): string {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  if (code === "ENOENT") {
+    if (!existsSync(input.cwd)) {
+      return `HOST_PROCESS_CWD_NOT_FOUND: Working directory does not exist: ${input.cwd}. Refresh the repository/worktree path before retrying; do not treat this as an executable-not-found failure.`;
+    }
+    return `HOST_PROCESS_EXECUTABLE_NOT_FOUND: Executable could not be resolved: ${input.executable}. The working directory still exists.`;
+  }
+  return error.message;
 }
 
 function appendTail(current: string, chunk: Buffer, maxBytes: number): string {

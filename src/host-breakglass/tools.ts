@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { stat } from "node:fs/promises";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -23,6 +24,19 @@ const changePackItem = z.discriminatedUnion("type", [
   z.object({ type: z.literal("replace"), path: P, find: z.string().min(1), replace: z.string(), replace_all: z.boolean().default(false), expected_old_sha256: sha256Value.optional() }).strict()
 ]);
 export const HOST_BREAKGLASS_TOOL_COUNT = 39;
+
+async function assertExistingWorkingDirectory(path: string): Promise<void> {
+  let info;
+  try {
+    info = await stat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      throw new Error(`Working directory does not exist: ${path}. The cwd is stale or was removed; refresh the repository/worktree path before retrying. Do not treat this as an executable-not-found failure.`);
+    }
+    throw error;
+  }
+  if (!info.isDirectory()) throw new Error(`Working directory is not a directory: ${path}`);
+}
 
 export function buildHostShellInvocation(command: string): { executable: string; args: string[] } {
   if (process.platform === "win32") {
@@ -68,6 +82,7 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
 
   server.registerTool("host_shell", { title: "Run breakglass shell", description: "Run a bounded PowerShell or POSIX shell command with an approved working directory. Safe mode adds high-risk command guardrails; arbitrary shell execution is not a filesystem sandbox.", inputSchema: { command: z.string().min(1).max(32_000), cwd: P, timeout_ms: pos.optional(), approval }, annotations: writeAnnotations }, async (args) => executeTool(context, "host_shell", async () => {
     const resolved = await context.paths.resolve(args.cwd, "execute");
+    await assertExistingWorkingDirectory(resolved.path);
     assertShellCommandAllowed(context.config, args.command, args.approval);
     const shell = buildHostShellInvocation(args.command);
     return runProcessWithTail({ executable: shell.executable, args: shell.args, cwd: resolved.path, env: minimalHostEnv(), timeout_ms: clampTimeout(context, args.timeout_ms), tail_bytes: context.config.limits.max_output_bytes });
@@ -75,6 +90,7 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
 
   server.registerTool("host_process_start", { title: "Start host process", description: "Start a long-running process without shell interpolation and track it by job id.", inputSchema: { executable: z.string().min(1).max(1_000), args: z.array(z.string().max(16_000)).max(200).default([]), cwd: P, timeout_ms: pos.optional(), approval }, annotations: nonDestructiveMutationAnnotations }, async (args) => executeTool(context, "host_process_start", async () => {
     const resolved = await context.paths.resolve(args.cwd, "execute");
+    await assertExistingWorkingDirectory(resolved.path);
     assertShellCommandAllowed(context.config, [args.executable, ...args.args].join(" "), args.approval);
     return context.processes.start({ executable: args.executable, args: args.args, cwd: resolved.path, timeout_ms: args.timeout_ms ? clampTimeout(context, args.timeout_ms) : undefined });
   }, { root_id: rootForPath(context, args.cwd), command_hash: shortHash([args.executable, ...args.args].join("\u0000")), target_kind: "process" }));
@@ -122,7 +138,7 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
   }, async (args) => executeComputerUseObserve(context, args));
   server.registerTool("host_computer_use_call", {
     title: "Computer-Use call",
-    description: "Call one approved GUI/Desktop Computer-Use tool through the local loopback adapter. Downstream MCP image content is preserved.",
+    description: "Call one approved GUI/Desktop Computer-Use tool through the local loopback adapter. Downstream MCP image content is preserved. Do not use Computer Use, Explorer, or other GUI actions as a fallback for failed repo/build/test/review process execution unless the operator explicitly requested GUI interaction or the task intrinsically requires GUI.",
     inputSchema: {
       tool: z.string().min(1).max(200).regex(/^[A-Za-z0-9_.-]+$/),
       arguments: z.record(z.string(), z.unknown()).default({})
