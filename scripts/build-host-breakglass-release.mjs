@@ -17,6 +17,7 @@ export const RUNTIME_FILES = [
   'tunnel-poll-health.mjs', 'tunnel-readiness-watchdog.mjs'
 ].map(name => 'scripts/' + name);
 const GUI = 'scripts/host-breakglass-gui-runtime.mjs';
+const LIVENESS = 'scripts/host-breakglass-core-liveness.mjs';
 const CORE = 'dist/host-breakglass/server.js';
 const BUILDER = 'scripts/build-host-breakglass-release.mjs';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -81,14 +82,16 @@ export async function buildRelease({ root = repoRoot, out = join(root, '.cache',
   if (pkg.devDependencies.esbuild !== '0.27.7' || lock.packages[''].devDependencies.esbuild !== '0.27.7'
     || esbuildVersion !== '0.27.7' || lock.packages['node_modules/esbuild'].version !== esbuildVersion
     || installedSdk.version !== '1.29.0' || lock.packages['node_modules/@modelcontextprotocol/sdk'].version !== '1.29.0') throw Error('Unexpected build dependency versions');
-  const sourcePaths = [...RUNTIME_FILES, GUI, BUILDER, 'package.json', 'package-lock.json', 'LICENSE'];
+  const sourcePaths = [...RUNTIME_FILES, GUI, LIVENESS, BUILDER, 'package.json', 'package-lock.json', 'LICENSE'];
   const source = new Map(await Promise.all(sourcePaths.map(async p => [p, await readFile(join(root, p))])));
   // Invoke the existing build script unchanged. No production runtime or task is touched.
   execFileSync(process.platform === 'win32' ? 'cmd.exe' : 'npm', process.platform === 'win32' ? ['/d', '/s', '/c', 'npm run build'] : ['run', 'build'], { cwd: root, stdio: 'pipe', windowsHide: true });
   const gui = await bundleRuntime(root, GUI);
+  const liveness = await bundleRuntime(root, LIVENESS);
   const core = await bundleRuntime(root, CORE);
   const entries = new Map(RUNTIME_FILES.map(p => [p, source.get(p)]));
   entries.set(GUI, gui.bytes); entries.set(CORE, core.bytes);
+  entries.set(LIVENESS, liveness.bytes);
   entries.set('LICENSE', source.get('LICENSE'));
   // Release contains no installer dependencies or development npm scripts.
   entries.set('package.json', Buffer.from(JSON.stringify({ name: 'host-breakglass-release', private: true, type: 'module', engines: { node: pkg.engines.node } }, null, 2) + '\n'));
@@ -99,6 +102,7 @@ export async function buildRelease({ root = repoRoot, out = join(root, '.cache',
     sdk_version: installedSdk.version, bundler: { name: 'esbuild', version: esbuildVersion },
     builder_source_sha256: sha256(source.get(BUILDER)),
     gui: { source_sha256: sha256(source.get(GUI)), bundle_sha256: sha256(gui.bytes), inputs: gui.inputs },
+    core_liveness: { source_sha256: sha256(source.get(LIVENESS)), bundle_sha256: sha256(liveness.bytes), inputs: liveness.inputs },
     core: { build_input_sha256: sha256(await readFile(join(root, CORE))), bundle_sha256: sha256(core.bytes), inputs: core.inputs },
     provisioned_host_dependencies: ['Node.js', 'Windows PowerShell', 'Computer-Use runtime', 'Secure MCP Tunnel runtime and its host prerequisites'],
     files: [...entries].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, bytes]) => ({ path, sha256: sha256(bytes), bytes: bytes.length }))
@@ -106,7 +110,7 @@ export async function buildRelease({ root = repoRoot, out = join(root, '.cache',
   // Fence concurrent source/ref edits, including ignored build inputs actually consumed.
   if (JSON.stringify(checkoutIdentity(root, preview)) !== JSON.stringify(identity)) throw Error('Checkout identity changed during build');
   for (const [path, bytes] of source) if (sha256(await readFile(join(root, path))) !== sha256(bytes)) throw Error('Source changed during build');
-  for (const input of [...gui.inputs, ...core.inputs]) if (sha256(await readFile(join(root, input.path))) !== input.sha256) throw Error('Bundle input changed during build');
+  for (const input of [...gui.inputs, ...core.inputs, ...liveness.inputs]) if (sha256(await readFile(join(root, input.path))) !== input.sha256) throw Error('Bundle input changed during build');
   const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
   const name = `host-breakglass-${identity.commit.slice(0, 12)}${preview ? '-preview' : ''}-${sha256(manifestBytes).slice(0, 12)}`;
   entries.set('release-manifest.json', manifestBytes);

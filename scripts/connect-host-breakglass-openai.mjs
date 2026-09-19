@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createTunnelRuntime, createTunnelStatePublisher } from './host-breakglass-tunnel-runtime.mjs';
+import { createCoreLivenessWatchdog } from './host-breakglass-core-liveness.mjs';
 // Tests execute this same entry/lifecycle with only the tunnel OS boundary injected.
 export async function runConnector(options = {}) {
     const env = options.env ?? process.env;
@@ -12,7 +13,7 @@ export async function runConnector(options = {}) {
     const stateDir = env.GPT_HOST_BREAKGLASS_STATE_DIR ?? join(env.LOCALAPPDATA ?? repoRoot, 'gpt-repo-host-breakglass');
     const statePath = env.GPT_HOST_BREAKGLASS_STATE_PATH ?? join(stateDir, 'connector-state.json');
     const abort = new AbortController();
-    let stopping = false, server, tunnel, publisher, shutdownPromise;
+    let stopping = false, server, tunnel, publisher, liveness, shutdownPromise;
     const exit = options.exit ?? (code => process.exit(code));
     const onSignal = () => { void shutdown(0); };
     process.on('SIGINT', onSignal);
@@ -23,6 +24,7 @@ export async function runConnector(options = {}) {
         stopping = true;
         abort.abort();
         shutdownPromise = (async () => {
+            await liveness?.stop();
             const clean = await tunnel?.stop();
             await publisher?.publish({ status: clean === false ? 'cleanup_unconfirmed' : 'stopped', ready: false, generation: tunnel?.state().generation ?? null }).catch(() => { });
             if (server && server.exitCode === null && server.signalCode === null) {
@@ -85,7 +87,18 @@ export async function runConnector(options = {}) {
                 options.onTunnelState?.(state);
             } });
         tunnel.start();
-        return { shutdown, tunnel, server, publisher };
+        liveness = createCoreLivenessWatchdog({ pid: server.pid, port }, {
+            ...options.coreLivenessOptions,
+            onFailure: () => { if (!stopping) void shutdown(1); },
+            onState: state => {
+                if (stopping) return;
+                if (state.status === 'degraded' || state.status === 'failed')
+                    console.error(`[core-liveness] ${state.status} consecutive_failures=${state.failures}`);
+                options.onCoreLivenessState?.(state);
+            }
+        });
+        liveness.start();
+        return { shutdown, tunnel, server, publisher, liveness };
     }
     catch (error) {
         if (!stopping)
