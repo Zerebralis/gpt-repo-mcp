@@ -16,9 +16,18 @@ type PowerShellAstCommand = {
   elements: string[];
 };
 
+type PowerShellAstMemberInvocation = {
+  type_name?: string | null;
+  member?: string | null;
+  text: string;
+  start: number;
+  end: number;
+};
+
 type PowerShellAstResult = {
   parse_errors: string[];
   commands: PowerShellAstCommand[];
+  members: PowerShellAstMemberInvocation[];
 };
 
 const DISK_BOOT_TOOLS = new Set(["diskpart", "format", "bcdedit", "bootrec", "reagentc"]);
@@ -26,6 +35,8 @@ const SHELL_COMMAND_INDIRECTORS = new Set([
   "start-process", "saps",
   "invoke-expression", "iex",
   "invoke-command", "icm",
+  "invoke-wmimethod", "iwmi",
+  "invoke-cimmethod", "icim",
   "set-alias", "sal",
   "new-alias", "nal",
   "powershell", "pwsh",
@@ -43,7 +54,9 @@ $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
 $commands = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object {
-  $elements = @($_.CommandElements | ForEach-Object { $_.Extent.Text })
+  $elements = @($_.CommandElements | ForEach-Object {
+    if ($_ -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $_.Value } else { $_.Extent.Text }
+  })
   [pscustomobject]@{
     name = $_.GetCommandName()
     text = $_.Extent.Text
@@ -52,9 +65,22 @@ $commands = @($ast.FindAll({ param($node) $node -is [System.Management.Automatio
     elements = $elements
   }
 })
+$members = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true) | ForEach-Object {
+  $typeName = $null
+  if ($_.Expression -is [System.Management.Automation.Language.TypeExpressionAst]) { $typeName = $_.Expression.TypeName.FullName }
+  $memberName = if ($_.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $_.Member.Value } else { $_.Member.Extent.Text }
+  [pscustomobject]@{
+    type_name = $typeName
+    member = $memberName
+    text = $_.Extent.Text
+    start = $_.Extent.StartOffset
+    end = $_.Extent.EndOffset
+  }
+})
 [pscustomobject]@{
   parse_errors = @($errors | ForEach-Object { $_.Message })
   commands = $commands
+  members = $members
 } | ConvertTo-Json -Compress -Depth 8
 `;
 
@@ -166,9 +192,11 @@ export function safeBlockMatches(command: string, surface: "shell" | "process" =
   const diskBoot = findDiskBootCommand(command, 0);
   if (diskBoot) matches.push(diskBoot);
   if (surface === "shell") {
+    const nativeProcessCreate = findWmicProcessCreateCommand(command, 0);
+    if (nativeProcessCreate) matches.push(nativeProcessCreate);
     const indirection = findShellCommandIndirection(command, 0);
     if (indirection) matches.push(indirection);
-    if (!diskBoot && !indirection && needsPowerShellAst(command)) {
+    if (!diskBoot && !nativeProcessCreate && !indirection && needsPowerShellAst(command)) {
       const astBlock = findPowerShellAstBlock(command);
       if (astBlock) matches.push(astBlock);
     }
@@ -185,7 +213,7 @@ export function safeBlockMatches(command: string, surface: "shell" | "process" =
 }
 
 function needsPowerShellAst(command: string): boolean {
-  return /[{}]|\$\(|\bwmic(?:\.exe)?\b/i.test(command);
+  return /[{}]|\$\(|::|`|\bwmic(?:\.exe)?\b/i.test(command);
 }
 
 function findPowerShellAstBlock(command: string): SafeBlockMatch | undefined {
@@ -279,16 +307,78 @@ function computePowerShellAstBlock(command: string): SafeBlockMatch | undefined 
       };
     }
   }
+
+  const members = Array.isArray(ast.members)
+    ? ast.members
+    : ast.members ? [ast.members as PowerShellAstMemberInvocation] : [];
+  for (const entry of members) {
+    const typeName = typeof entry.type_name === "string" ? entry.type_name.trim().toLowerCase() : "";
+    const member = typeof entry.member === "string" ? entry.member.trim().toLowerCase() : "";
+    if ((typeName === "system.diagnostics.process" || typeName === "diagnostics.process") && member === "start") {
+      return {
+        label: "command indirection",
+        token: "Process.Start",
+        span: validAstSpan(entry) ? { start: entry.start, end: entry.end } : undefined
+      };
+    }
+  }
   return undefined;
 }
 
-function validAstSpan(entry: PowerShellAstCommand): boolean {
+function validAstSpan(entry: { start: number; end: number }): boolean {
   return Number.isInteger(entry.start) && Number.isInteger(entry.end) && entry.start >= 0 && entry.end > entry.start;
 }
 
 function isWmicProcessCreate(elements: string[]): boolean {
   const args = elements.slice(1).map((value) => value.trim().replace(/^["']|["']$/g, "").toLowerCase());
   return args.length >= 3 && args[0] === "process" && args[1] === "call" && args[2] === "create";
+}
+
+function findWmicProcessCreateCommand(command: string, baseOffset: number, depth = 0): SafeBlockMatch | undefined {
+  for (const segment of splitCommandSegments(command)) {
+    const token = readLeadingToken(segment.text);
+    if (!token) continue;
+    const normalized = normalizeCommandToken(token.value);
+    if (normalized === "wmic") {
+      const args = readCommandArguments(segment.text, token.end, 3)
+        .map((value) => value.toLowerCase());
+      if (args.length >= 3 && args[0] === "process" && args[1] === "call" && args[2] === "create") {
+        return {
+          label: "command indirection",
+          token: safeTokenLabel(token.value),
+          span: {
+            start: baseOffset + segment.start + token.start,
+            end: baseOffset + segment.start + token.end
+          }
+        };
+      }
+    }
+
+    if (depth < 4 && normalized === "cmd") {
+      const nested = cmdPayload(segment.text, token.end);
+      if (nested) {
+        const nestedMatch = findWmicProcessCreateCommand(
+          nested.text,
+          baseOffset + segment.start + nested.start,
+          depth + 1
+        );
+        if (nestedMatch) return nestedMatch;
+      }
+    }
+  }
+  return undefined;
+}
+
+function readCommandArguments(text: string, afterCommand: number, limit: number): string[] {
+  const values: string[] = [];
+  let offset = afterCommand;
+  while (values.length < limit && offset < text.length) {
+    const next = readLeadingToken(text.slice(offset));
+    if (!next) break;
+    values.push(next.value);
+    offset += next.end;
+  }
+  return values;
 }
 
 function findDiskBootCommand(command: string, baseOffset: number, depth = 0): SafeBlockMatch | undefined {

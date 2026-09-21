@@ -155,7 +155,13 @@ describe("host breakglass policy", () => {
       "Measure-Command { diskpart }",
       "Start-Job { diskpart }",
       "1 | ForEach-Object { diskpart }",
-      "wmic process call create diskpart"
+      "wmic process call create diskpart",
+      'Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList "diskpart"',
+      'Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine="diskpart"}',
+      '[System.Diagnostics.Process]::Start( "diskpart" )',
+      'w`m`i`c process call create diskpart',
+      'cmd.exe /c "wmic process call create diskpart"',
+      'wmic p`r`o`c`e`s`s call create diskpart'
     ];
     for (const command of nested) {
       expect(safeBlockLabels(command).length, command).toBeGreaterThan(0);
@@ -165,6 +171,8 @@ describe("host breakglass policy", () => {
     expect(() => assertShellCommandAllowed(config(root), "if ($true) { Write-Output ok }"))
       .not.toThrow();
     expect(() => assertShellCommandAllowed(config(root), "Measure-Command { Write-Output ok }"))
+      .not.toThrow();
+    expect(() => assertShellCommandAllowed(config(root), "[Math]::Abs( -1 )"))
       .not.toThrow();
   });
 
@@ -181,6 +189,8 @@ describe("host breakglass policy", () => {
     expect(() => assertProcessStartAllowed(config(root), "powershell.exe", ["-File", "script.ps1"]))
       .toThrow(/command indirection/i);
     expect(() => assertProcessStartAllowed(config(root), "cmd.exe", ["", "/c", "diskpart"]))
+      .toThrow(/command indirection/i);
+    expect(() => assertProcessStartAllowed(config(root), "cmd.exe", ["/c", "wmic", "process", "call", "create", "diskpart"]))
       .toThrow(/command indirection/i);
     expect(() => assertProcessStartAllowed(config(root), "diskpart.exe", [])).toThrow(/disk\/boot tooling/i);
   });
