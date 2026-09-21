@@ -29,7 +29,9 @@ export async function hostGit(
   }
 ) {
   const mutation = ["add", "commit", "fetch", "pull", "push", "merge"].includes(input.operation);
-  const resolved = await context.paths.resolve(input.cwd, mutation ? "execute" : "read");
+  // Structured Git mutations need repository write authority, not generic host execution authority.
+  // Shell/process tools remain separately gated by the root's execute capability.
+  const resolved = await context.paths.resolve(input.cwd, mutation ? "write" : "read");
   await ensureGitWorktree(resolved.path, context.config.limits.max_output_bytes);
 
   if (input.expected_head) {
