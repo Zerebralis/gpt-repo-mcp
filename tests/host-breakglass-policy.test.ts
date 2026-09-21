@@ -161,7 +161,15 @@ describe("host breakglass policy", () => {
       '[System.Diagnostics.Process]::Start( "diskpart" )',
       'w`m`i`c process call create diskpart',
       'cmd.exe /c "wmic process call create diskpart"',
-      'wmic p`r`o`c`e`s`s call create diskpart'
+      'wmic p`r`o`c`e`s`s call create diskpart',
+      '$p = New-Object System.Diagnostics.Process; $p.StartInfo.FileName = "diskpart"; $p.Start()',
+      '$wshell = New-Object -ComObject WScript.Shell; $wshell.Run("diskpart")',
+      "([wmiclass]'Win32_Process').Create('diskpart')",
+      '[System.Management.Automation.PowerShell]::Create().AddScript("diskpart").Invoke()',
+      'forfiles /p c:\\windows\\system32 /m notepad.exe /c "cmd /c diskpart"',
+      'Set-Item alias:dp diskpart; dp',
+      'Invoke-Item C:\\Windows\\System32\\diskpart.exe',
+      'Set-Content bypass.bat "diskpart"; .\\bypass.bat'
     ];
     for (const command of nested) {
       expect(safeBlockLabels(command).length, command).toBeGreaterThan(0);

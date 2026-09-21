@@ -43,10 +43,13 @@ argument layouts, and dynamic invocation operators are rejected. Use
 free-form shell. On Windows, commands that contain scriptblocks, subexpressions,
 or native process-creation indirection are additionally parsed with PowerShell's
 own AST; every nested `CommandAst` is inspected, while parser errors and dynamic
-command names fail closed. When an explicit managed process is itself `cmd.exe`
-or PowerShell, its structured argument list is inspected; opaque, encoded, or
-script-file interpreter entry points require Full Mode rather than being treated
-as safely parsed.
+command names fail closed. Safe Mode also rejects unknown instance/member-method
+invocation, object/provider execution indirection, direct script/batch execution,
+and native Windows launcher primitives that can execute an opaque child command;
+those require Full Mode or a structured Breakglass primitive. When an explicit
+managed process is itself `cmd.exe` or PowerShell, its structured argument list
+is inspected; opaque, encoded, or script-file interpreter entry points require
+Full Mode rather than being treated as safely parsed.
 
 ## Tool Surface
 

@@ -37,11 +37,23 @@ const SHELL_COMMAND_INDIRECTORS = new Set([
   "invoke-command", "icm",
   "invoke-wmimethod", "iwmi",
   "invoke-cimmethod", "icim",
+  "invoke-item", "ii",
+  "new-object",
   "set-alias", "sal",
   "new-alias", "nal",
+  "set-item", "si",
+  "new-item", "ni",
+  "start-job", "sajb", "start-threadjob",
   "powershell", "pwsh",
+  "forfiles", "schtasks", "at", "sc", "rundll32", "mshta", "wscript", "cscript", "regsvr32", "msiexec",
   "function", "filter"
 ]);
+
+const SCRIPT_EXECUTION_EXTENSIONS = new Set([
+  ".ps1", ".psm1", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".hta", ".py", ".pl", ".rb", ".sh"
+]);
+
+const SAFE_STATIC_MEMBER_TYPES = new Set(["math", "system.math"]);
 
 const POWERSHELL_AST_CACHE = new Map<string, SafeBlockMatch | null>();
 const POWERSHELL_AST_CACHE_MAX = 128;
@@ -213,7 +225,7 @@ export function safeBlockMatches(command: string, surface: "shell" | "process" =
 }
 
 function needsPowerShellAst(command: string): boolean {
-  return /[{}]|\$\(|::|`|\bwmic(?:\.exe)?\b/i.test(command);
+  return /[{}]|\$\(|::|`|\bwmic(?:\.exe)?\b|\.\s*(?:[A-Za-z_][A-Za-z0-9_]*|\$[A-Za-z_][A-Za-z0-9_]*)\s*\(/i.test(command);
 }
 
 function findPowerShellAstBlock(command: string): SafeBlockMatch | undefined {
@@ -284,7 +296,7 @@ function computePowerShellAstBlock(command: string): SafeBlockMatch | undefined 
     }
 
     const normalized = normalizeCommandToken(name);
-    if (SHELL_COMMAND_INDIRECTORS.has(normalized)) {
+    if (SHELL_COMMAND_INDIRECTORS.has(normalized) || isScriptExecutionToken(name)) {
       return {
         label: "command indirection",
         token: safeTokenLabel(name),
@@ -313,11 +325,11 @@ function computePowerShellAstBlock(command: string): SafeBlockMatch | undefined 
     : ast.members ? [ast.members as PowerShellAstMemberInvocation] : [];
   for (const entry of members) {
     const typeName = typeof entry.type_name === "string" ? entry.type_name.trim().toLowerCase() : "";
-    const member = typeof entry.member === "string" ? entry.member.trim().toLowerCase() : "";
-    if ((typeName === "system.diagnostics.process" || typeName === "diagnostics.process") && member === "start") {
+    const member = typeof entry.member === "string" ? entry.member.trim() : "";
+    if (!typeName || !SAFE_STATIC_MEMBER_TYPES.has(typeName)) {
       return {
         label: "command indirection",
-        token: "Process.Start",
+        token: typeName && member ? `${typeName}.${member}`.slice(0, 120) : "<dynamic-member-invocation>",
         span: validAstSpan(entry) ? { start: entry.start, end: entry.end } : undefined
       };
     }
@@ -429,7 +441,7 @@ function findShellCommandIndirection(command: string, baseOffset: number, depth 
     const token = readLeadingToken(segment.text);
     if (!token) continue;
     const normalized = normalizeCommandToken(token.value);
-    if (SHELL_COMMAND_INDIRECTORS.has(normalized)) {
+    if (SHELL_COMMAND_INDIRECTORS.has(normalized) || isScriptExecutionToken(token.value)) {
       return {
         label: "command indirection",
         token: safeTokenLabel(token.value),
@@ -603,6 +615,11 @@ function readLeadingToken(text: string): { value: string; start: number; end: nu
   }
 
   return value ? { value, start, end: index } : undefined;
+}
+
+function isScriptExecutionToken(token: string): boolean {
+  const extension = win32.extname(token.trim()).toLowerCase();
+  return SCRIPT_EXECUTION_EXTENSIONS.has(extension);
 }
 
 function matchDiskBootToken(token: string): { label: string } | undefined {
