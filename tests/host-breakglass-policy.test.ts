@@ -56,6 +56,7 @@ describe("host breakglass policy", () => {
       "Write-Output 'literal; format.exe C:'",
       'Write-Output "literal | bcdedit /enum"',
       'cmd.exe /cecho harmless',
+      'cmd.exe /?',
       'cmd.exe /c wh"oa"mi.exe',
       'cmd.exe /c formatter/?',
       'cmd.exe /c "formatter.exe " /?',
@@ -137,6 +138,8 @@ describe("host breakglass policy", () => {
       'cmd.exe "" /c "diskpart"',
       '$env:FOO="/c"; cmd.exe $env:FOO diskpart',
       'Set-Alias foo diskpart; foo',
+      'start diskpart',
+      'Write-Output diskpart | cmd.exe',
       '& ("disk" + "part")',
       '. ($dynamicCommand)'
     ];
@@ -156,6 +159,7 @@ describe("host breakglass policy", () => {
       "Start-Job { diskpart }",
       "1 | ForEach-Object { diskpart }",
       "wmic process call create diskpart",
+      "wmic /node:127.0.0.1 process call create diskpart",
       'Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList "diskpart"',
       'Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine="diskpart"}',
       '[System.Diagnostics.Process]::Start( "diskpart" )',

@@ -32,7 +32,7 @@ type PowerShellAstResult = {
 
 const DISK_BOOT_TOOLS = new Set(["diskpart", "format", "bcdedit", "bootrec", "reagentc"]);
 const SHELL_COMMAND_INDIRECTORS = new Set([
-  "start-process", "saps",
+  "start-process", "saps", "start",
   "invoke-expression", "iex",
   "invoke-command", "icm",
   "invoke-wmimethod", "iwmi",
@@ -343,7 +343,14 @@ function validAstSpan(entry: { start: number; end: number }): boolean {
 
 function isWmicProcessCreate(elements: string[]): boolean {
   const args = elements.slice(1).map((value) => value.trim().replace(/^["']|["']$/g, "").toLowerCase());
-  return args.length >= 3 && args[0] === "process" && args[1] === "call" && args[2] === "create";
+  return containsWmicProcessCreate(args);
+}
+
+function containsWmicProcessCreate(args: string[]): boolean {
+  for (let index = 0; index <= args.length - 3; index += 1) {
+    if (args[index] === "process" && args[index + 1] === "call" && args[index + 2] === "create") return true;
+  }
+  return false;
 }
 
 function findWmicProcessCreateCommand(command: string, baseOffset: number, depth = 0): SafeBlockMatch | undefined {
@@ -352,9 +359,9 @@ function findWmicProcessCreateCommand(command: string, baseOffset: number, depth
     if (!token) continue;
     const normalized = normalizeCommandToken(token.value);
     if (normalized === "wmic") {
-      const args = readCommandArguments(segment.text, token.end, 3)
+      const args = readCommandArguments(segment.text, token.end, 32)
         .map((value) => value.toLowerCase());
-      if (args.length >= 3 && args[0] === "process" && args[1] === "call" && args[2] === "create") {
+      if (containsWmicProcessCreate(args)) {
         return {
           label: "command indirection",
           token: safeTokenLabel(token.value),
@@ -479,7 +486,7 @@ function findShellCommandIndirection(command: string, baseOffset: number, depth 
 
 function hasOpaqueCmdArguments(text: string, afterCommand: number): boolean {
   const remainder = text.slice(afterCommand).trim();
-  if (remainder.length === 0) return false;
+  if (remainder.length === 0) return true;
   return !/^\/\?\s*$/i.test(remainder);
 }
 
