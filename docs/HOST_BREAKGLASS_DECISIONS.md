@@ -24,6 +24,8 @@ When a stable bounded contract can represent an action, prefer a structured prim
 
 **Safe Mode is not a host sandbox.** Shell safety must not be presented as a sandbox merely by adding more regex rules. Structured primitives, explicit roots, allowlists, stale-state guards, and process-identity guards are preferred where practical.
 
+Safe Mode therefore treats opaque command indirection as a trust-boundary change, not as another string-matching case. Free-form `host_shell` rejects nested interpreters and dynamic execution primitives that would make the blocked-command policy depend on reimplementing PowerShell/cmd semantics. Explicit managed process launches remain available through `host_process_start`; interpreter launches there are checked from the structured executable/argument vector and fail closed when the payload cannot be classified.
+
 ## Credentialed external HTTP is a structured host-side capability
 
 External API credentials are not a reason to broaden `host_shell` or turn

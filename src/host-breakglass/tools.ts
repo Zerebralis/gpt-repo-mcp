@@ -12,7 +12,7 @@ import { hostHttpRequest } from "./http-request.js";
 import { hostListDirectory, hostReadFile, hostSearch, hostStat, hostWriteFile } from "./filesystem.js";
 import { hostEditFile } from "./edit-file.js";
 import { hostGit } from "./git.js";
-import { assertShellCommandAllowed, minimalHostEnv } from "./shell-policy.js";
+import { assertProcessStartAllowed, assertShellCommandAllowed, minimalHostEnv } from "./shell-policy.js";
 import { shortHash, type HostAuditEvent } from "./audit.js";
 import { hostEventLogQuery, hostKillSystemProcess, hostNetworkListeners, hostPortOwner, hostRegistryRead, hostRegistryWrite, hostScheduledTaskControl, hostScheduledTaskGet, hostScheduledTaskList, hostServiceControl, hostServiceList, hostSystemInfo, hostSystemProcessDetail, hostSystemProcesses, hostSystemProcessTree } from "./windows.js";
 
@@ -76,7 +76,7 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
   server.registerTool("host_shell", { title: "Run breakglass shell", description: "Run a bounded PowerShell or POSIX shell command with an approved working directory. Safe mode adds high-risk command guardrails; arbitrary shell execution is not a filesystem sandbox.", inputSchema: { command: z.string().min(1).max(32_000), cwd: P, timeout_ms: pos.optional(), approval }, annotations: writeAnnotations }, async (args) => executeTool(context, "host_shell", async () => {
     const resolved = await context.paths.resolve(args.cwd, "execute");
     await assertExistingWorkingDirectory(resolved.path);
-    assertShellCommandAllowed(context.config, args.command, args.approval);
+    assertShellCommandAllowed(context.config, args.command, args.approval, "shell");
     const shell = buildHostShellInvocation(args.command);
     return runProcessWithTail({ executable: shell.executable, args: shell.args, cwd: resolved.path, env: minimalHostEnv(), timeout_ms: clampTimeout(context, args.timeout_ms), tail_bytes: context.config.limits.max_output_bytes });
   }, { root_id: rootForPath(context, args.cwd), command_hash: shortHash(args.command), target_kind: "shell" }));
@@ -84,7 +84,7 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
   server.registerTool("host_process_start", { title: "Start host process", description: "Start a long-running process without shell interpolation and track it by job id. Retain that job id; never start a replacement solely because a later output observation failed.", inputSchema: { executable: z.string().min(1).max(1_000), args: z.array(z.string().max(16_000)).max(200).default([]), cwd: P, timeout_ms: pos.optional(), approval }, annotations: nonDestructiveMutationAnnotations }, async (args) => executeTool(context, "host_process_start", async () => {
     const resolved = await context.paths.resolve(args.cwd, "execute");
     await assertExistingWorkingDirectory(resolved.path);
-    assertShellCommandAllowed(context.config, [args.executable, ...args.args].join(" "), args.approval);
+    assertProcessStartAllowed(context.config, args.executable, args.args, args.approval);
     return context.processes.start({ executable: args.executable, args: args.args, cwd: resolved.path, timeout_ms: args.timeout_ms ? clampTimeout(context, args.timeout_ms) : undefined });
   }, { root_id: rootForPath(context, args.cwd), command_hash: shortHash([args.executable, ...args.args].join("\u0000")), target_kind: "process" }));
 

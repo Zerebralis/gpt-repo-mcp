@@ -8,6 +8,15 @@ type SafeBlockMatch = {
 };
 
 const DISK_BOOT_TOOLS = new Set(["diskpart", "format", "bcdedit", "bootrec", "reagentc"]);
+const SHELL_COMMAND_INDIRECTORS = new Set([
+  "start-process", "saps",
+  "invoke-expression", "iex",
+  "invoke-command", "icm",
+  "set-alias", "sal",
+  "new-alias", "nal",
+  "powershell", "pwsh",
+  "function", "filter"
+]);
 
 const SAFE_BLOCK_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
   { label: "host shutdown/restart", pattern: /\b(shutdown(?:\.exe)?|restart-computer|stop-computer)\b/i },
@@ -22,10 +31,63 @@ const SAFE_BLOCK_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
 export function assertShellCommandAllowed(
   config: HostBreakglassConfig,
   command: string,
-  approval?: string
+  approval?: string,
+  surface: "shell" | "process" = "shell"
 ): void {
   if (command.trim().length === 0) throw new Error("Command must not be empty.");
-  const blocked = safeBlockMatches(command)[0];
+  const blocked = safeBlockMatches(command, surface)[0];
+  assertPolicyMatchAllowed(config, approval, blocked);
+}
+
+export function assertProcessStartAllowed(
+  config: HostBreakglassConfig,
+  executable: string,
+  args: string[],
+  approval?: string
+): void {
+  const direct = findDiskBootCommand(executable, 0);
+  if (direct) {
+    assertPolicyMatchAllowed(config, approval, direct);
+    return;
+  }
+
+  const normalized = normalizeCommandToken(executable);
+  if (normalized === "cmd") {
+    const parsed = processCmdPayload(args);
+    if (parsed.kind === "help") return;
+    if (parsed.kind === "command") {
+      assertShellCommandAllowed(config, parsed.command, approval, "shell");
+      return;
+    }
+    assertPolicyMatchAllowed(config, approval, {
+      label: "command indirection",
+      token: safeTokenLabel(executable)
+    });
+    return;
+  }
+
+  if (normalized === "powershell" || normalized === "pwsh") {
+    const parsed = processPowerShellPayload(args);
+    if (parsed.kind === "command") {
+      assertShellCommandAllowed(config, parsed.command, approval, "shell");
+      return;
+    }
+    assertPolicyMatchAllowed(config, approval, {
+      label: parsed.kind === "encoded" ? "encoded PowerShell" : "command indirection",
+      token: safeTokenLabel(executable)
+    });
+    return;
+  }
+
+  const joined = [executable, ...args].join(" ");
+  assertShellCommandAllowed(config, joined, approval, "process");
+}
+
+function assertPolicyMatchAllowed(
+  config: HostBreakglassConfig,
+  approval: string | undefined,
+  blocked: SafeBlockMatch | undefined
+): void {
   if (!blocked) return;
   if (config.mode === "full" && approval === "HOST_BREAKGLASS_FULL") return;
 
@@ -56,13 +118,17 @@ export function minimalHostEnv(extra: Record<string, string> = {}): NodeJS.Proce
 }
 
 export function safeBlockLabels(command: string): string[] {
-  return safeBlockMatches(command).map((entry) => entry.label);
+  return safeBlockMatches(command, "shell").map((entry) => entry.label);
 }
 
-export function safeBlockMatches(command: string): SafeBlockMatch[] {
+export function safeBlockMatches(command: string, surface: "shell" | "process" = "shell"): SafeBlockMatch[] {
   const matches: SafeBlockMatch[] = [];
   const diskBoot = findDiskBootCommand(command, 0);
   if (diskBoot) matches.push(diskBoot);
+  if (surface === "shell") {
+    const indirection = findShellCommandIndirection(command, 0);
+    if (indirection) matches.push(indirection);
+  }
 
   for (const entry of SAFE_BLOCK_PATTERNS) {
     const match = entry.pattern.exec(command);
@@ -111,6 +177,108 @@ function findDiskBootCommand(command: string, baseOffset: number, depth = 0): Sa
           depth + 1
         );
         if (nestedMatch) return nestedMatch;
+      }
+    }
+  }
+  return undefined;
+}
+
+function findShellCommandIndirection(command: string, baseOffset: number, depth = 0): SafeBlockMatch | undefined {
+  for (const segment of splitCommandSegments(command)) {
+    const token = readLeadingToken(segment.text);
+    if (!token) continue;
+    const normalized = normalizeCommandToken(token.value);
+    if (SHELL_COMMAND_INDIRECTORS.has(normalized)) {
+      return {
+        label: "command indirection",
+        token: safeTokenLabel(token.value),
+        span: {
+          start: baseOffset + segment.start + token.start,
+          end: baseOffset + segment.start + token.end
+        }
+      };
+    }
+
+    if (depth < 4 && normalized === "cmd") {
+      const nested = cmdPayload(segment.text, token.end);
+      if (nested) {
+        const nestedMatch = findShellCommandIndirection(
+          nested.text,
+          baseOffset + segment.start + nested.start,
+          depth + 1
+        );
+        if (nestedMatch) return nestedMatch;
+      } else if (hasOpaqueCmdArguments(segment.text, token.end)) {
+        return {
+          label: "command indirection",
+          token: safeTokenLabel(token.value),
+          span: {
+            start: baseOffset + segment.start + token.start,
+            end: baseOffset + segment.start + token.end
+          }
+        };
+      }
+    }
+  }
+
+  return findDynamicInvocationOperator(command, baseOffset);
+}
+
+function hasOpaqueCmdArguments(text: string, afterCommand: number): boolean {
+  const remainder = text.slice(afterCommand).trim();
+  if (remainder.length === 0) return false;
+  return !/^\/\?\s*$/i.test(remainder);
+}
+
+function findDynamicInvocationOperator(command: string, baseOffset: number): SafeBlockMatch | undefined {
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "`" || char === "^") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+
+    if (char === "&") {
+      let next = index + 1;
+      while (next < command.length && /\s/.test(command[next])) next += 1;
+      if (next < command.length && "$({[".includes(command[next])) {
+        return {
+          label: "command indirection",
+          token: "<dynamic-invocation>",
+          span: { start: baseOffset + index, end: baseOffset + next + 1 }
+        };
+      }
+    }
+
+    if (char === ".") {
+      let previous = index - 1;
+      while (previous >= 0 && /[ \t]/.test(command[previous])) previous -= 1;
+      const atCommandBoundary = previous < 0 || /[;|&\r\n]/.test(command[previous]);
+      let next = index + 1;
+      if (atCommandBoundary && next < command.length && /\s/.test(command[next])) {
+        while (next < command.length && /\s/.test(command[next])) next += 1;
+        if (next < command.length && "$({[".includes(command[next])) {
+          return {
+            label: "command indirection",
+            token: "<dynamic-dot-source>",
+            span: { start: baseOffset + index, end: baseOffset + next + 1 }
+          };
+        }
       }
     }
   }
@@ -253,6 +421,45 @@ function isSubsequence(candidate: string, target: string): boolean {
 
 function safeTokenLabel(token: string): string {
   return win32.basename(token).slice(0, 120);
+}
+
+function processCmdPayload(args: string[]):
+  | { kind: "command"; command: string }
+  | { kind: "help" }
+  | { kind: "opaque" } {
+  if (args.length === 1 && args[0].trim() === "/?") return { kind: "help" };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (value.length === 0) return { kind: "opaque" };
+    const parsed = parseCmdSwitchSequence(value);
+    if (!parsed) return { kind: "opaque" };
+    if (!parsed.command) continue;
+
+    const parts: string[] = [];
+    if (parsed.payloadSuffix.length > 0) parts.push(parsed.payloadSuffix);
+    parts.push(...args.slice(index + 1));
+    const command = parts.join(" ").trim();
+    return command.length > 0 ? { kind: "command", command } : { kind: "opaque" };
+  }
+  return { kind: "opaque" };
+}
+
+function processPowerShellPayload(args: string[]):
+  | { kind: "command"; command: string }
+  | { kind: "encoded" }
+  | { kind: "file" }
+  | { kind: "opaque" } {
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index].trim().toLowerCase();
+    if (value === "-encodedcommand" || value === "-enc") return { kind: "encoded" };
+    if (value === "-file" || value === "-f") return { kind: "file" };
+    if (value === "-command" || value === "-c" || value === "-commandwithargs") {
+      const command = args.slice(index + 1).join(" ").trim();
+      return command.length > 0 ? { kind: "command", command } : { kind: "opaque" };
+    }
+  }
+  return { kind: "opaque" };
 }
 
 function cmdPayload(text: string, afterCommand: number): { text: string; start: number } | undefined {

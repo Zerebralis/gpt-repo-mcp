@@ -35,6 +35,15 @@ mode adds command guardrails, but an arbitrary shell can reference other host
 paths. Prefer the bounded file, Git, process, registry, and service tools when
 they can perform the task.
 
+Safe Mode also fails closed on shell-level command indirection that cannot be
+reliably classified as a direct command: nested PowerShell, `Start-Process`,
+`Invoke-Expression`, `Invoke-Command`, alias/function creation, opaque `cmd.exe`
+argument layouts, and dynamic invocation operators are rejected. Use
+`host_process_start` for an explicit child process instead of escaping through
+free-form shell. When that process is itself `cmd.exe` or PowerShell, its
+structured argument list is inspected; opaque/encoded/script-file interpreter
+entry points require Full Mode rather than being treated as safely parsed.
+
 ## Tool Surface
 
 The host server currently exposes 40 tools:

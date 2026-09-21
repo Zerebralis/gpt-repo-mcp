@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HostBreakglassConfigSchema } from "../src/host-breakglass/config.js";
 import { HostPathPolicy, isWithin } from "../src/host-breakglass/path-policy.js";
-import { assertShellCommandAllowed, minimalHostEnv, safeBlockLabels, safeBlockMatches } from "../src/host-breakglass/shell-policy.js";
+import { assertProcessStartAllowed, assertShellCommandAllowed, minimalHostEnv, safeBlockLabels, safeBlockMatches } from "../src/host-breakglass/shell-policy.js";
 
 function config(root: string, mode: "safe" | "full" = "safe") {
   return HostBreakglassConfigSchema.parse({
@@ -58,7 +58,10 @@ describe("host breakglass policy", () => {
       'cmd.exe /c formatter/?',
       'cmd.exe /c "formatter.exe " /?',
       '& "e$($null)cho" harmless',
-      'cmd.exe /c "e%BGR1_OR%cho harmless"'
+      'cmd.exe /c "e%BGR1_OR%cho harmless"',
+      "Write-Output 'Start-Process diskpart'",
+      "Get-Command Start-Process",
+      "Write-Output '& ($dynamic)'"
     ];
     for (const command of harmless) {
       expect(safeBlockLabels(command), command).not.toContain("disk/boot tooling");
@@ -121,6 +124,42 @@ describe("host breakglass policy", () => {
     expect(diagnostic?.span?.end).toBeGreaterThan(diagnostic?.span?.start ?? -1);
     expect(() => assertShellCommandAllowed(config(root), "Get-Date; C:\\Windows\\System32\\BCDEDIT.EXE /enum"))
       .toThrow(/rule="disk\/boot tooling".*token="BCDEDIT\.EXE".*span=/i);
+  });
+
+  it("fails closed on shell command indirection that can escape static command parsing", () => {
+    const root = tmpdir();
+    const indirect = [
+      "Start-Process diskpart",
+      "Invoke-Command -ScriptBlock { diskpart }",
+      'Invoke-Expression "diskpart"',
+      'powershell.exe -Command "diskpart"',
+      'cmd.exe "" /c "diskpart"',
+      '$env:FOO="/c"; cmd.exe $env:FOO diskpart',
+      'Set-Alias foo diskpart; foo',
+      '& ("disk" + "part")',
+      '. ($dynamicCommand)'
+    ];
+    for (const command of indirect) {
+      expect(safeBlockLabels(command), command).toContain("command indirection");
+      expect(() => assertShellCommandAllowed(config(root), command), command).toThrow(/(?:command indirection|disk\/boot tooling)/i);
+    }
+  });
+
+  it("checks structured process starts without blocking safe interpreter payloads", () => {
+    const root = tmpdir();
+    expect(() => assertProcessStartAllowed(config(root), process.execPath, ["-e", "setTimeout(()=>{},1000)"])).not.toThrow();
+    expect(() => assertProcessStartAllowed(config(root), "powershell.exe", ["-NoProfile", "-Command", "Write-Output ok"])).not.toThrow();
+    expect(() => assertProcessStartAllowed(config(root), "cmd.exe", ["/c", "echo", "ok"])).not.toThrow();
+
+    expect(() => assertProcessStartAllowed(config(root), "powershell.exe", ["-NoProfile", "-Command", 'Invoke-Expression "diskpart"']))
+      .toThrow(/command indirection/i);
+    expect(() => assertProcessStartAllowed(config(root), "powershell.exe", ["-EncodedCommand", "AAAA"]))
+      .toThrow(/encoded PowerShell/i);
+    expect(() => assertProcessStartAllowed(config(root), "powershell.exe", ["-File", "script.ps1"]))
+      .toThrow(/command indirection/i);
+    expect(() => assertProcessStartAllowed(config(root), "cmd.exe", ["", "/c", "diskpart"]))
+      .toThrow(/command indirection/i);
+    expect(() => assertProcessStartAllowed(config(root), "diskpart.exe", [])).toThrow(/disk\/boot tooling/i);
   });
 
   it("requires the Computer-Use adapter to stay on loopback", () => {
