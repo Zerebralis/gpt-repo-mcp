@@ -155,7 +155,7 @@ function readLeadingToken(text: string): { value: string; start: number; end: nu
   if (index >= text.length) return undefined;
 
   const start = index;
-  const quote = text[index] === "'" || text[index] === '"' ? text[index++] : undefined;
+  let quote: "'" | '"' | undefined;
   let value = "";
   let escaped = false;
 
@@ -174,10 +174,16 @@ function readLeadingToken(text: string): { value: string; start: number; end: nu
     }
     if (quote) {
       if (char === quote) {
+        quote = undefined;
         index += 1;
-        break;
+        continue;
       }
       value += char;
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
       index += 1;
       continue;
     }
@@ -253,7 +259,7 @@ function cmdPayload(text: string, afterCommand: number): { text: string; start: 
       return raw.length > 0 ? { text: raw, start } : undefined;
     }
 
-    const option = /^\/(?:d|s|q|a|u|e:(?:on|off)|f:(?:on|off)|v:(?:on|off))(?=\s|$)/i.exec(tail);
+    const option = /^\/(?:d|s|q|a|u|e:(?:on|off)|f:(?:on|off)|v:(?:on|off))(?=[\s/]|$)/i.exec(tail);
     if (!option) return undefined;
     index += option[0].length;
     while (index < text.length && /\s/.test(text[index])) index += 1;

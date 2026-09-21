@@ -43,7 +43,7 @@ export async function hostEditFile(
 
   const intendedContent = input.replace_all
     ? current.content.split(input.old_text).join(input.new_text)
-    : current.content.replace(input.old_text, input.new_text);
+    : current.content.replace(input.old_text, () => input.new_text);
   const intendedPostSha256 = sha256(intendedContent);
 
   await hooks.beforeCommit?.();

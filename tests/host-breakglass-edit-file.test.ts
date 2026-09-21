@@ -64,6 +64,22 @@ describe("host_edit_file postconditions", () => {
     expect(post).not.toContain(oldText);
   });
 
+  it("treats single replacement text as literal even when it contains dollar sequences", async () => {
+    const { root, context } = await fixture();
+    const file = join(root, "literal-dollar.txt");
+    await writeFile(file, "alpha\n", "utf8");
+    const newText = "$& $$ value";
+
+    const result = await hostEditFile(context, {
+      path: file,
+      old_text: "alpha",
+      new_text: newText
+    });
+
+    expect(await readFile(file, "utf8")).toBe(newText + "\n");
+    expect(result.postcondition.verified).toBe(true);
+  });
+
   it("fails closed on zero matches, duplicate default matches, and stale hashes", async () => {
     const { root, context } = await fixture();
     const file = join(root, "target.txt");

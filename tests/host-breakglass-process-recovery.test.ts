@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { HostProcessManager } from "../src/host-breakglass/process-manager.js";
 
 const roots = new Set<string>();
+const managers = new Set<HostProcessManager>();
 
 async function rootFixture() {
   const root = await mkdtemp(join(tmpdir(), "gpt-host-process-recovery-"));
@@ -14,15 +15,34 @@ async function rootFixture() {
   return root;
 }
 
+function managerFixture() {
+  const manager = new HostProcessManager(4, 4096);
+  managers.add(manager);
+  return manager;
+}
+
 afterEach(async () => {
-  for (const root of roots) await rm(root, { recursive: true, force: true });
+  for (const manager of managers) {
+    for (const job of manager.list()) {
+      if (job.status === "running") manager.kill(job.job_id);
+    }
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (manager.list().every((job) => Boolean(job.ended_at))) break;
+      await delay(10);
+    }
+  }
+  managers.clear();
+
+  for (const root of roots) {
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
+  }
   roots.clear();
 });
 
 describe("managed process observation recovery", () => {
   it("keeps the same live job after an injected output transport failure and preserves exit state", async () => {
     const root = await rootFixture();
-    const manager = new HostProcessManager(4, 4096);
+    const manager = managerFixture();
     const started = manager.start({
       executable: process.execPath,
       args: ["-e", "process.stdout.write('READY\\n'); process.stdin.resume(); process.stdin.once('data',()=>process.exit(0))"],
@@ -75,7 +95,7 @@ describe("managed process observation recovery", () => {
 
   it("keeps an unknown job id separate and never adopts another job by PID", async () => {
     const root = await rootFixture();
-    const manager = new HostProcessManager(4, 4096);
+    const manager = managerFixture();
     const known = manager.start({
       executable: process.execPath,
       args: ["-e", "process.stdin.resume(); process.stdin.once('data',()=>process.exit(0))"],

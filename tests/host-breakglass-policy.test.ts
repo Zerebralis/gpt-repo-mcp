@@ -54,6 +54,7 @@ describe("host breakglass policy", () => {
       "Write-Output 'literal; format.exe C:'",
       'Write-Output "literal | bcdedit /enum"',
       'cmd.exe /cecho harmless',
+      'cmd.exe /c wh"oa"mi.exe',
       '& "e$($null)cho" harmless',
       'cmd.exe /c "e%BGR1_OR%cho harmless"'
     ];
@@ -71,7 +72,11 @@ describe("host breakglass policy", () => {
       "Get-Date & 'C:\\Windows\\System32\\reagentc.exe' /info",
       'cmd.exe /c "C:\\Windows\\System32\\bcdedit.exe /enum"',
       'cmd.exe /cformat /?',
+      'cmd.exe /d/cformat /?',
+      'cmd.exe /d/s/c "bcdedit /enum"',
       'cmd.exe /d /s /c "bcdedit /enum"',
+      'cmd.exe /c f"o"rmat /?',
+      'cmd.exe /c C:\\Win"dows"\\System32\\format.exe /?',
       'cmd.exe /c "format /?',
       '. format.com /?',
       '& "fo$($null)rmat" /?',
