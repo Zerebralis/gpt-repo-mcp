@@ -90,10 +90,11 @@ function findDiskBootCommand(command: string, baseOffset: number, depth = 0): Sa
     }
 
     const normalized = normalizeCommandToken(token.value);
-    if (DISK_BOOT_TOOLS.has(normalized) || dynamicCommandCouldResolveToDiskBoot(token.value)) {
+    const directDiskBoot = matchDiskBootToken(token.value);
+    if (directDiskBoot || dynamicCommandCouldResolveToDiskBoot(token.value)) {
       return {
         label: "disk/boot tooling",
-        token: DISK_BOOT_TOOLS.has(normalized) ? safeTokenLabel(token.value) : "<dynamic-command>",
+        token: directDiskBoot?.label ?? "<dynamic-command>",
         span: {
           start: baseOffset + segment.start + token.start,
           end: baseOffset + segment.start + token.end
@@ -195,8 +196,25 @@ function readLeadingToken(text: string): { value: string; start: number; end: nu
   return value ? { value, start, end: index } : undefined;
 }
 
+function matchDiskBootToken(token: string): { label: string } | undefined {
+  const trimmed = token.trim();
+  const normalized = normalizeCommandToken(trimmed);
+  if (DISK_BOOT_TOOLS.has(normalized)) {
+    return { label: safeTokenLabel(trimmed) };
+  }
+
+  for (const tool of DISK_BOOT_TOOLS) {
+    const attachedSwitch = new RegExp(
+      `(?:^|[\\\\/])(${tool}(?:\\.(?:exe|com))?)(?=\\/|$)`,
+      "i"
+    ).exec(trimmed);
+    if (attachedSwitch) return { label: attachedSwitch[1].slice(0, 120) };
+  }
+  return undefined;
+}
+
 function normalizeCommandToken(token: string): string {
-  return win32.basename(token).replace(/\.(?:exe|com)$/i, "").toLowerCase();
+  return win32.basename(token.trim()).replace(/\.(?:exe|com)$/i, "").toLowerCase();
 }
 
 function dynamicCommandCouldResolveToDiskBoot(token: string): boolean {
@@ -217,6 +235,7 @@ function dynamicCommandCouldResolveToDiskBoot(token: string): boolean {
     skeleton = next;
   }
   if (!dynamic) return false;
+  if (matchDiskBootToken(skeleton)) return true;
 
   const normalizedSkeleton = normalizeCommandToken(skeleton);
   if (normalizedSkeleton.length === 0) return true;
