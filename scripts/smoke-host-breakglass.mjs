@@ -56,8 +56,8 @@ try {
 
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
-  assert(names.length === 39, `expected 39 tools, got ${names.length}: ${names.join(", ")}`);
-  for (const required of ["host_read_file", "host_read_many", "host_file_hash", "host_write_file", "host_edit_file", "host_apply_changes", "host_shell", "host_process_start", "host_process_input", "host_git", "host_system_info", "host_system_process_detail", "host_network_listeners", "host_port_owner", "host_task_list", "host_eventlog_query", "host_http_probe", "host_diagnostics_batch", "host_window_observe", "host_computer_use_catalog", "host_computer_use_call"]) {
+  assert(names.length === 40, `expected 40 tools, got ${names.length}: ${names.join(", ")}`);
+  for (const required of ["host_read_file", "host_read_many", "host_file_hash", "host_write_file", "host_edit_file", "host_apply_changes", "host_shell", "host_process_start", "host_process_input", "host_git", "host_system_info", "host_system_process_detail", "host_network_listeners", "host_port_owner", "host_task_list", "host_eventlog_query", "host_http_probe", "host_http_request", "host_diagnostics_batch", "host_window_observe", "host_computer_use_catalog", "host_computer_use_call"]) {
     assert(names.includes(required), `missing tool ${required}`);
   }
 
@@ -187,7 +187,7 @@ try {
     victim = undefined;
   }
 
-  console.log("Host breakglass built MCP smoke PASS (39 tools/files/change-pack/process-input/git/windows/network/tasks/eventlog/http/registry/services/root-policy/safe-policy).\n");
+  console.log("Host breakglass built MCP smoke PASS (40 tools/files/change-pack/process-input/git/windows/network/tasks/eventlog/http/registry/services/root-policy/safe-policy).\n");
 
   async function call(name, args) {
     return client.callTool({ name, arguments: args });
@@ -239,7 +239,7 @@ async function waitForHealth(processHandle, portNumber, readOutput) {
       const response = await fetch(`http://127.0.0.1:${portNumber}/health`, { signal: AbortSignal.timeout(400) });
       if (response.ok) {
         const body = await response.json();
-        assert(body?.ok === true && body?.name === "gpt-repo-host-breakglass" && body?.tool_count === 39, `bad health: ${JSON.stringify(body)}`);
+        assert(body?.ok === true && body?.name === "gpt-repo-host-breakglass" && body?.tool_count === 40, `bad health: ${JSON.stringify(body)}`);
         return;
       }
     } catch {

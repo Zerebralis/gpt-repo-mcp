@@ -46,6 +46,22 @@
   "scheduled_tasks": {
     "allowlist": []
   },
+  "http": {
+    "credentials": [
+      {
+        "id": "example-api",
+        "source": "windows_user_env",
+        "name": "EXAMPLE_API_KEY",
+        "scheme": "bearer",
+        "allowed_hosts": [
+          "api.example.com"
+        ]
+      }
+    ],
+    "max_request_body_bytes": 524288,
+    "max_response_body_bytes": 262144,
+    "max_redirects": 3
+  },
   "computer_use": {
     "enabled": false,
     "server_url": "http://127.0.0.1:3107/mcp"

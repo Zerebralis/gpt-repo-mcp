@@ -58,6 +58,60 @@ describe("host breakglass policy", () => {
     }).computer_use.enabled).toBe(true);
   });
 
+  it("validates credentialed HTTP bindings fail-closed", () => {
+    const root = tmpdir();
+    const base = {
+      enabled: true,
+      roots: [{ id: "test", root, read: true, write: true, execute: true }]
+    };
+
+    const valid = HostBreakglassConfigSchema.parse({
+      ...base,
+      http: {
+        credentials: [{
+          id: "groq",
+          source: "windows_user_env",
+          name: "GROQ_API_KEY",
+          scheme: "bearer",
+          allowed_hosts: ["api.groq.com"]
+        }]
+      }
+    });
+    expect(valid.http.credentials).toHaveLength(1);
+    expect(valid.http.credentials[0]?.allowed_hosts).toEqual(["api.groq.com"]);
+
+    expect(() => HostBreakglassConfigSchema.parse({
+      ...base,
+      http: {
+        credentials: [
+          { id: "same", name: "FIRST_KEY", allowed_hosts: ["api.example.com"] },
+          { id: "same", name: "SECOND_KEY", allowed_hosts: ["api.example.com"] }
+        ]
+      }
+    })).toThrow(/duplicate http credential id/i);
+
+    expect(() => HostBreakglassConfigSchema.parse({
+      ...base,
+      http: {
+        credentials: [{ id: "bad-host", name: "KEY", allowed_hosts: ["*.example.com"] }]
+      }
+    })).toThrow();
+
+    expect(() => HostBreakglassConfigSchema.parse({
+      ...base,
+      http: {
+        credentials: [{ id: "no-host", name: "KEY", allowed_hosts: [] }]
+      }
+    })).toThrow();
+
+    expect(() => HostBreakglassConfigSchema.parse({
+      ...base,
+      http: {
+        credentials: [{ id: "bad-source", source: "process_env", name: "KEY", allowed_hosts: ["api.example.com"] }]
+      }
+    })).toThrow();
+  });
+
   it("uses a minimal inherited environment", () => {
     const env = minimalHostEnv({ BREAKGLASS_TEST: "yes" });
     expect(env.BREAKGLASS_TEST).toBe("yes");

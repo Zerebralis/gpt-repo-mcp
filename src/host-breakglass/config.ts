@@ -32,6 +32,38 @@ export const HostRootSchema = z.object({
   execute: z.boolean().default(false)
 }).strict();
 
+const HostnameSchema = z.string().min(1).max(253)
+  .regex(/^[A-Za-z0-9.-]+$/, "HTTP allowed_hosts entries must be plain DNS hostnames")
+  .refine((value) => !value.startsWith(".") && !value.endsWith(".") && !value.includes(".."), "Invalid HTTP allowed host");
+
+export const HostHttpCredentialSchema = z.object({
+  id: z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/),
+  source: z.literal("windows_user_env").default("windows_user_env"),
+  name: z.string().min(1).max(128).regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+  scheme: z.enum(["bearer", "x-api-key", "x-goog-api-key"]).default("bearer"),
+  allowed_hosts: z.array(HostnameSchema).min(1).max(32)
+}).strict();
+
+export const HostHttpConfigSchema = z.object({
+  credentials: z.array(HostHttpCredentialSchema).max(32).default([]),
+  max_request_body_bytes: PositiveIntSchema.max(4 * 1024 * 1024).default(512 * 1024),
+  max_response_body_bytes: PositiveIntSchema.max(4 * 1024 * 1024).default(256 * 1024),
+  max_redirects: z.number().int().min(0).max(5).default(3)
+}).strict().superRefine((http, ctx) => {
+  const ids = new Set<string>();
+  for (const [index, credential] of http.credentials.entries()) {
+    if (ids.has(credential.id)) {
+      ctx.addIssue({ code: "custom", path: ["credentials", index, "id"], message: "Duplicate HTTP credential id" });
+    }
+    ids.add(credential.id);
+  }
+}).default({
+  credentials: [],
+  max_request_body_bytes: 512 * 1024,
+  max_response_body_bytes: 256 * 1024,
+  max_redirects: 3
+});
+
 export const HostBreakglassConfigSchema = z.object({
   enabled: z.boolean().default(false),
   mode: z.enum(["safe", "full"]).default("safe"),
@@ -80,6 +112,7 @@ export const HostBreakglassConfigSchema = z.object({
   }).strict().default({
     allowlist: []
   }),
+  http: HostHttpConfigSchema,
   computer_use: z.object({
     enabled: z.boolean().default(false),
     server_url: LoopbackMcpUrlSchema.default("http://127.0.0.1:3107/mcp"),

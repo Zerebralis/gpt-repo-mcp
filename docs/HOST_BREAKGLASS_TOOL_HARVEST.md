@@ -1,6 +1,6 @@
 # Host Breakglass Tool Harvest
 
-Status: 2026-09-16
+Status: 2026-09-21
 
 Host Breakglass stays a focused recovery connector. The goal is not unrestricted host authority; it is to replace brittle shell/GUI improvisation with bounded, structured tools harvested from patterns already proven in GPT Repo MCP, Chat On Steroids, AWA, and the Computer-Use adapter.
 
@@ -11,6 +11,35 @@ Host Breakglass stays a focused recovery connector. The goal is not unrestricted
 - Read/observe broadly enough to diagnose; mutate only through explicit roots, allowlists, stale-state guards, or full-mode approval.
 - Reduce MCP/tunnel round-trips for common diagnosis flows.
 - Keep agent orchestration, memory, project planning, and product-level review out of Breakglass.
+
+## Credentialed external HTTPS — implementation candidate
+
+A concrete recurring blocker showed that free-form shell/process commands which
+combine local credential lookup, authentication construction, and external
+HTTPS can be rejected before Host Breakglass executes them. This is addressed
+at the capability boundary rather than by weakening or disguising security
+checks.
+
+- `host_http_probe` stays a credential-free diagnostic primitive.
+- `host_http_request` is a separate bounded GET/POST API primitive.
+- The MCP call contains only a configured `credential_ref`, not its value.
+- Credential bindings are local policy: Windows user environment-variable name,
+  authentication scheme, and exact allowed hosts.
+- HTTPS is mandatory; full mode does not bypass the credential-to-host binding.
+- Redirects are same-origin only and bounded.
+- Caller-supplied authentication/cookie headers and secret-like JSON/query
+  fields are rejected.
+- Request and response bodies are bounded.
+- Returned headers are allowlisted and reflected credential values are
+  redacted.
+- Audit metadata never records request headers, bodies, response bodies, or
+  credential values.
+
+The candidate expands the current MCP surface from 39 to 40 tools. The
+2026-09-16 live-acceptance record below remains historical evidence for the
+39-tool baseline and must not be rewritten as if this later tool existed then.
+
+See `HOST_BREAKGLASS_CREDENTIALED_HTTP.md` for the full contract.
 
 ## P0 — implemented in this slice
 

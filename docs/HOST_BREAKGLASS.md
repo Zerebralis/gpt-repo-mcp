@@ -37,7 +37,7 @@ they can perform the task.
 
 ## Tool Surface
 
-The host server currently exposes 39 tools:
+The host server currently exposes 40 tools:
 
 - roots and filesystem: list roots, stat, read, write, exact edit, directory
   listing, and bounded search;
@@ -51,6 +51,9 @@ The host server currently exposes 39 tools:
 - harvested diagnostics: multi-file reads, streaming hashes, process detail/tree
   with identity guards, network listeners/port ownership, Scheduled Tasks,
   Windows Event Log queries, loopback HTTP probes, and batched diagnostics;
+- credentialed HTTPS: bounded GET/POST API calls through `host_http_request`, with
+  host-side credential references, exact host policy, HTTPS-only transport,
+  same-origin redirect enforcement, and bounded/redacted responses;
 - safer recovery mutation: line-oriented managed-process stdin plus guarded
   multi-file text change packs with dry-run, stale hashes, and automatic rollback
   on partial apply failure;
@@ -91,7 +94,9 @@ Local transport configuration belongs in:
 
 Use `host-breakglass.env.example` as the key-name template. Do not commit the
 local file. Runtime API keys, tunnel credentials, and path tokens must never be
-stored in Git.
+stored in Git. External API credentials used by `host_http_request` remain local
+host inputs; configure only references and host policy. See
+[HOST_BREAKGLASS_CREDENTIALED_HTTP.md](HOST_BREAKGLASS_CREDENTIALED_HTTP.md).
 
 ## Reliability Runbook
 
@@ -397,7 +402,7 @@ Explicit Windows real-runtime gate:
 release to a new OS temporary directory outside the repository, uses isolated
 state/configuration/audit and free alternative loopback ports, starts the real
 Computer-Use backend, probes its MCP handshake and read-only display-size call,
-and verifies native Core health and 39 MCP tools. The real tunnel runs against
+and verifies native Core health and 40 MCP tools. The real tunnel runs against
 an isolated local control-plane stub via the connector's existing test seam;
 production credentials and the real remote control plane are not used. The
 actual supervisor entry is separately imported/started against an isolated
