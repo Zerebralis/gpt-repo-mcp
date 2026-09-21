@@ -10,6 +10,7 @@ import { hostApplyChanges } from "./change-pack.js";
 import { hostFileHash, hostHttpProbe, hostReadMany } from "./diagnostics.js";
 import { hostHttpRequest } from "./http-request.js";
 import { hostListDirectory, hostReadFile, hostSearch, hostStat, hostWriteFile } from "./filesystem.js";
+import { hostEditFile } from "./edit-file.js";
 import { hostGit } from "./git.js";
 import { assertShellCommandAllowed, minimalHostEnv } from "./shell-policy.js";
 import { shortHash, type HostAuditEvent } from "./audit.js";
@@ -60,16 +61,7 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
 
   server.registerTool("host_write_file", { title: "Write host file", description: "Rewrite or append an approved host file; expected_sha256 provides stale-write protection.", inputSchema: { path: P, content: z.string(), mode: z.enum(["rewrite", "append"]).default("rewrite"), create_directories: z.boolean().default(false), expected_sha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional() }, annotations: writeAnnotations }, async (args) => executeTool(context, "host_write_file", async () => { await assertExpectedFileHash(context, args.path, args.expected_sha256); return hostWriteFile(context, args); }, { root_id: rootForPath(context, args.path), target_kind: "file" }));
 
-  server.registerTool("host_edit_file", { title: "Edit host file", description: "Replace exact text in an approved host file with optional stale-write protection.", inputSchema: { path: P, old_text: z.string().min(1), new_text: z.string(), replace_all: z.boolean().default(false), expected_sha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional() }, annotations: writeAnnotations }, async (args) => executeTool(context, "host_edit_file", async () => {
-    const current = await hostReadFile(context, { path: args.path });
-    if (current.truncated) throw new Error("File is larger than the configured read limit; exact edit refused.");
-    assertHash(current.content, args.expected_sha256);
-    const count = countOccurrences(current.content, args.old_text);
-    if (count === 0) throw new Error("old_text was not found.");
-    if (!args.replace_all && count !== 1) throw new Error(`old_text occurs ${count} times; provide a unique fragment or set replace_all=true.`);
-    const content = args.replace_all ? current.content.split(args.old_text).join(args.new_text) : current.content.replace(args.old_text, args.new_text);
-    return hostWriteFile(context, { path: args.path, content, mode: "rewrite" });
-  }, { root_id: rootForPath(context, args.path), target_kind: "file" }));
+  server.registerTool("host_edit_file", { title: "Edit host file", description: "Replace exact text in an approved host file with stale-write protection and verified postcondition evidence (replacement count, pre/post SHA-256, and bounded match spans).", inputSchema: { path: P, old_text: z.string().min(1), new_text: z.string(), replace_all: z.boolean().default(false), expected_sha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional() }, annotations: writeAnnotations }, async (args) => executeTool(context, "host_edit_file", () => hostEditFile(context, args), { root_id: rootForPath(context, args.path), target_kind: "file" }));
 
   server.registerTool("host_apply_changes", {
     title: "Apply host change pack",
@@ -349,7 +341,6 @@ function assertHash(content: string, expectedHash: string | undefined): void {
   const actual = createHash("sha256").update(content, "utf8").digest("hex");
   if (actual.toLowerCase() !== expectedHash.toLowerCase()) throw new Error(`File changed. expected_sha256=${expectedHash} actual_sha256=${actual}`);
 }
-function countOccurrences(haystack: string, needle: string): number { let count = 0; let offset = 0; while (true) { const next = haystack.indexOf(needle, offset); if (next < 0) return count; count += 1; offset = next + needle.length; } }
 function clampTimeout(context: HostBreakglassContext, requested?: number): number { return Math.min(requested ?? context.config.limits.default_timeout_ms, context.config.limits.max_timeout_ms); }
 function rootForPath(context: HostBreakglassContext, path: string): string | undefined {
   const lower = path.toLowerCase();

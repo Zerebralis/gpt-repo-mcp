@@ -60,6 +60,17 @@ The host server currently exposes 40 tools:
 - unified GUI observation: one-call window metadata, accessibility tree, and
   optional screenshot through the existing Computer-Use adapter.
 
+`host_edit_file` remains an exact literal replacement primitive rather than a
+general patch engine. A successful edit returns the replacement count, pre- and
+post-write SHA-256 values, and at most eight matched spans. The tool immediately
+re-reads the complete post-image and verifies its SHA-256 against the intended
+content before reporting success. Zero matches, non-unique default matches, stale
+input hashes, and postcondition mismatches fail closed. For large/source-critical
+multiline edits, treat `postcondition.verified=true` as the write-integrity gate
+and still run the relevant syntax/type/test checks for semantic correctness;
+do not repeat an edit after an indeterminate/postcondition failure without first
+reconciling the target file.
+
 Git push is disabled unless `git.allow_push` is enabled. Only configured remote
 names are accepted. Push and other mutating Git calls can be bound to an
 `expected_head` to reject stale state.
