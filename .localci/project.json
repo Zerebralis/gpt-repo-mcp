@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "trust": "PUBLIC_OWNER_CODE",
+  "allowed_executors": [
+    "linux_docker"
+  ],
+  "physical_runtime_required": false,
+  "resource_class": "standard",
+  "max_timeout_seconds": 300,
+  "linux_docker": {
+    "image": "node@sha256:87a4f951f28b85d189df365d24c479d3bdb70be77c1ff5c9029db2ef67e251ac",
+    "gates": {
+      "mcp-server-syntax": [
+        "node",
+        "--check",
+        "src/server.ts"
+      ],
+      "host-breakglass-syntax": [
+        "node",
+        "--check",
+        "src/host-breakglass/server.ts"
+      ],
+      "cli-syntax": [
+        "node",
+        "--check",
+        "src/cli/connect-gpt.ts"
+      ],
+      "public-check-syntax": [
+        "node",
+        "--check",
+        "scripts/check-public.mjs"
+      ]
+    }
+  }
+}
