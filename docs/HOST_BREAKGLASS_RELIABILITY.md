@@ -137,6 +137,26 @@ The existing watchdog probes every 10 seconds and trips after three consecutive 
 
 `host-breakglass-doctor.mjs` also reports a live `control_plane_poll` check, including freshness and poll age but no tunnel credentials or IDs.
 
+## Failure mode C: managed output observation is unavailable while the job continues
+
+### External symptom
+
+`host_process_output(job_id)` can fail with an MCP/tunnel/transport-level error such as `UNAVAILABLE` even though the managed process itself is still alive.
+
+### Fault-isolation result — 2026-09-21
+
+A controlled fault was injected after the Process Manager had successfully looked up a running job but before the caller could rely on the observation result. The same manager retained exactly one job with the same job ID and PID, the job remained `running`, and the same job later reached `exited` with the correct exit code. This isolates the gap above the process lifecycle itself: an observation/transport failure does not mutate or prove loss of the managed job.
+
+### Recovery contract
+
+- A failed `host_process_output` call is **indeterminate observation**, never evidence of process termination and never sufficient reason to start a replacement.
+- Reconcile the **same job ID** with `host_process_list({ job_id })`. This is one bounded manager-state lookup; it does not start, poll, retry, or kill anything.
+- `found=true, manager_state=running` means continue observing that same managed job. Do not duplicate it.
+- `found=true, manager_state=terminal` preserves the manager's recorded terminal status/exit code for that same job identity.
+- `found=false, manager_state=unknown` means only that the current manager has no record for the job ID. It is **not** proof that an OS process ended. Core restart still loses in-memory job handles.
+- Never re-associate a managed job from PID alone. PID values may be reused; if separate OS-process evidence is needed, use the process-detail identity guard rather than adopting a PID as a managed job.
+- Recovery contains no automatic retry loop and never automatically replays `host_process_start`. Any later replacement is a new explicit decision after terminal/loss evidence is established.
+
 ## Triage order
 
 When Host Breakglass becomes unreliable, use this order instead of immediately restarting everything:

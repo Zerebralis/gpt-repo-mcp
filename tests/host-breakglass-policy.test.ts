@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HostBreakglassConfigSchema } from "../src/host-breakglass/config.js";
 import { HostPathPolicy, isWithin } from "../src/host-breakglass/path-policy.js";
-import { assertShellCommandAllowed, minimalHostEnv, safeBlockLabels } from "../src/host-breakglass/shell-policy.js";
+import { assertShellCommandAllowed, minimalHostEnv, safeBlockLabels, safeBlockMatches } from "../src/host-breakglass/shell-policy.js";
 
 function config(root: string, mode: "safe" | "full" = "safe") {
   return HostBreakglassConfigSchema.parse({
@@ -43,6 +43,84 @@ describe("host breakglass policy", () => {
     expect(() => assertShellCommandAllowed(config(root), guarded)).toThrow(/blocked/i);
     const full = HostBreakglassConfigSchema.parse({ enabled: true, mode: "full", full_host_access: true, roots: [] });
     expect(() => assertShellCommandAllowed(full, guarded, "HOST_BREAKGLASS_FULL")).not.toThrow();
+  });
+
+  it("distinguishes real disk/boot tools from harmless PowerShell formatters", () => {
+    const root = tmpdir();
+    const harmless = [
+      "Get-Process | Format-Table -AutoSize",
+      "Get-Service; Format-List Name,Status",
+      "Get-ChildItem & Format-Wide Name",
+      "Write-Output 'literal; format.exe C:'",
+      'Write-Output "literal | bcdedit /enum"',
+      'cmd.exe /cecho harmless',
+      'cmd.exe /c wh"oa"mi.exe',
+      'cmd.exe /c formatter/?',
+      'cmd.exe /c "formatter.exe " /?',
+      '& "e$($null)cho" harmless',
+      'cmd.exe /c "e%BGR1_OR%cho harmless"'
+    ];
+    for (const command of harmless) {
+      expect(safeBlockLabels(command), command).not.toContain("disk/boot tooling");
+      expect(() => assertShellCommandAllowed(config(root), command), command).not.toThrow();
+    }
+
+    const nativeDiskTool = ["for", "mat"].join("");
+    const bootConfigTool = ["bcd", "edit"].join("");
+    const dangerous = [
+      "cmd.exe /x/c" + nativeDiskTool + " /?",
+      "cmd.exe /y /c \"" + nativeDiskTool + " /?\"",
+      "cmd.exe /t:1f/c" + nativeDiskTool + " /?",
+      "cmd.exe /c \"" + nativeDiskTool + ".exe\" C:",
+      "cmd.exe /c \"C:\\Windows\\System32\\" + bootConfigTool + ".exe\" /enum",
+      "format C:",
+      "FORMAT.EXE C:",
+      "diskpart",
+      "Write-Output harmless\nformat C:",
+      "Get-Date; bCdEdIt /enum",
+      "Get-Date | C:\\Windows\\System32\\bootrec.exe /?",
+      "Get-Date & 'C:\\Windows\\System32\\reagentc.exe' /info",
+      'cmd.exe /c "C:\\Windows\\System32\\bcdedit.exe /enum"',
+      'cmd.exe /cformat /?',
+      'cmd.exe "/c" format C:',
+      'cmd.exe `/c format C:',
+      'cmd.exe "/d" "/s" "/c" bcdedit /enum',
+      'cmd.exe /c format/?',
+      'cmd.exe /c format,C:',
+      'cmd.exe /c diskpart=',
+      'cmd.exe /c,format C:',
+      'cmd.exe /c=diskpart',
+      'cmd.exe /c "format;C:" foo',
+      'cmd.exe /c "(format C:)"',
+      'cmd.exe /c format.exe/?',
+      'cmd.exe /c C:\\Windows\\System32\\format.exe/?',
+      'cmd.exe /c "format.exe " /?',
+      'cmd.exe /c "format "^ /y C:',
+      'cmd.exe /c cmd.exe /c format/?',
+      'cmd.exe /d/cformat /?',
+      'cmd.exe /d/s/c "bcdedit /enum"',
+      'cmd.exe /d /s /c "bcdedit /enum"',
+      'cmd.exe /c f"o"rmat /?',
+      'cmd.exe /c C:\\Win"dows"\\System32\\format.exe /?',
+      'cmd.exe /c "format /?',
+      '. format.com /?',
+      '& "fo$($null)rmat" /?',
+      'cmd.exe /c "f%BGR1_OR%mat /?"',
+      '& "C:\\Windows\\System32\\diskpart.exe" /s disk.txt'
+    ];
+    for (const command of dangerous) {
+      expect(safeBlockLabels(command), command).toContain("disk/boot tooling");
+      expect(() => assertShellCommandAllowed(config(root), command), command).toThrow(/disk\/boot tooling/i);
+    }
+
+    const diagnostic = safeBlockMatches("Get-Date; C:\\Windows\\System32\\BCDEDIT.EXE /enum")[0];
+    expect(diagnostic).toMatchObject({
+      label: "disk/boot tooling",
+      token: "BCDEDIT.EXE"
+    });
+    expect(diagnostic?.span?.end).toBeGreaterThan(diagnostic?.span?.start ?? -1);
+    expect(() => assertShellCommandAllowed(config(root), "Get-Date; C:\\Windows\\System32\\BCDEDIT.EXE /enum"))
+      .toThrow(/rule="disk\/boot tooling".*token="BCDEDIT\.EXE".*span=/i);
   });
 
   it("requires the Computer-Use adapter to stay on loopback", () => {

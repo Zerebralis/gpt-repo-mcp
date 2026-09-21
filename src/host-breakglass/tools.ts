@@ -10,6 +10,7 @@ import { hostApplyChanges } from "./change-pack.js";
 import { hostFileHash, hostHttpProbe, hostReadMany } from "./diagnostics.js";
 import { hostHttpRequest } from "./http-request.js";
 import { hostListDirectory, hostReadFile, hostSearch, hostStat, hostWriteFile } from "./filesystem.js";
+import { hostEditFile } from "./edit-file.js";
 import { hostGit } from "./git.js";
 import { assertShellCommandAllowed, minimalHostEnv } from "./shell-policy.js";
 import { shortHash, type HostAuditEvent } from "./audit.js";
@@ -60,16 +61,7 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
 
   server.registerTool("host_write_file", { title: "Write host file", description: "Rewrite or append an approved host file; expected_sha256 provides stale-write protection.", inputSchema: { path: P, content: z.string(), mode: z.enum(["rewrite", "append"]).default("rewrite"), create_directories: z.boolean().default(false), expected_sha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional() }, annotations: writeAnnotations }, async (args) => executeTool(context, "host_write_file", async () => { await assertExpectedFileHash(context, args.path, args.expected_sha256); return hostWriteFile(context, args); }, { root_id: rootForPath(context, args.path), target_kind: "file" }));
 
-  server.registerTool("host_edit_file", { title: "Edit host file", description: "Replace exact text in an approved host file with optional stale-write protection.", inputSchema: { path: P, old_text: z.string().min(1), new_text: z.string(), replace_all: z.boolean().default(false), expected_sha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional() }, annotations: writeAnnotations }, async (args) => executeTool(context, "host_edit_file", async () => {
-    const current = await hostReadFile(context, { path: args.path });
-    if (current.truncated) throw new Error("File is larger than the configured read limit; exact edit refused.");
-    assertHash(current.content, args.expected_sha256);
-    const count = countOccurrences(current.content, args.old_text);
-    if (count === 0) throw new Error("old_text was not found.");
-    if (!args.replace_all && count !== 1) throw new Error(`old_text occurs ${count} times; provide a unique fragment or set replace_all=true.`);
-    const content = args.replace_all ? current.content.split(args.old_text).join(args.new_text) : current.content.replace(args.old_text, args.new_text);
-    return hostWriteFile(context, { path: args.path, content, mode: "rewrite" });
-  }, { root_id: rootForPath(context, args.path), target_kind: "file" }));
+  server.registerTool("host_edit_file", { title: "Edit host file", description: "Replace exact text in an approved host file with stale-write protection and verified postcondition evidence (replacement count, pre/post SHA-256, and bounded match spans).", inputSchema: { path: P, old_text: z.string().min(1), new_text: z.string(), replace_all: z.boolean().default(false), expected_sha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional() }, annotations: writeAnnotations }, async (args) => executeTool(context, "host_edit_file", () => hostEditFile(context, args), { root_id: rootForPath(context, args.path), target_kind: "file" }));
 
   server.registerTool("host_apply_changes", {
     title: "Apply host change pack",
@@ -89,16 +81,16 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
     return runProcessWithTail({ executable: shell.executable, args: shell.args, cwd: resolved.path, env: minimalHostEnv(), timeout_ms: clampTimeout(context, args.timeout_ms), tail_bytes: context.config.limits.max_output_bytes });
   }, { root_id: rootForPath(context, args.cwd), command_hash: shortHash(args.command), target_kind: "shell" }));
 
-  server.registerTool("host_process_start", { title: "Start host process", description: "Start a long-running process without shell interpolation and track it by job id.", inputSchema: { executable: z.string().min(1).max(1_000), args: z.array(z.string().max(16_000)).max(200).default([]), cwd: P, timeout_ms: pos.optional(), approval }, annotations: nonDestructiveMutationAnnotations }, async (args) => executeTool(context, "host_process_start", async () => {
+  server.registerTool("host_process_start", { title: "Start host process", description: "Start a long-running process without shell interpolation and track it by job id. Retain that job id; never start a replacement solely because a later output observation failed.", inputSchema: { executable: z.string().min(1).max(1_000), args: z.array(z.string().max(16_000)).max(200).default([]), cwd: P, timeout_ms: pos.optional(), approval }, annotations: nonDestructiveMutationAnnotations }, async (args) => executeTool(context, "host_process_start", async () => {
     const resolved = await context.paths.resolve(args.cwd, "execute");
     await assertExistingWorkingDirectory(resolved.path);
     assertShellCommandAllowed(context.config, [args.executable, ...args.args].join(" "), args.approval);
     return context.processes.start({ executable: args.executable, args: args.args, cwd: resolved.path, timeout_ms: args.timeout_ms ? clampTimeout(context, args.timeout_ms) : undefined });
   }, { root_id: rootForPath(context, args.cwd), command_hash: shortHash([args.executable, ...args.args].join("\u0000")), target_kind: "process" }));
 
-  server.registerTool("host_process_output", { title: "Read process output", description: "Read current state and bounded output tail of a managed job.", inputSchema: { job_id: z.string().uuid() }, annotations: readOnlyAnnotations }, async (args) => executeTool(context, "host_process_output", async () => context.processes.output(args.job_id)));
+  server.registerTool("host_process_output", { title: "Read process output", description: "Read current state and bounded output tail of a managed job. A tool/transport failure is indeterminate, not proof of process end; reconcile the same job id with host_process_list before considering any replacement.", inputSchema: { job_id: z.string().uuid() }, annotations: readOnlyAnnotations }, async (args) => executeTool(context, "host_process_output", async () => context.processes.output(args.job_id)));
   server.registerTool("host_process_input", { title: "Write process input", description: "Write bounded UTF-8 input to stdin of a running managed process; optionally close stdin. This is line-oriented process input, not a full PTY.", inputSchema: { job_id: z.string().uuid(), chars: z.string().max(100_000).default(""), end: z.boolean().default(false) }, annotations: nonDestructiveMutationAnnotations }, async (args) => executeTool(context, "host_process_input", async () => context.processes.input(args.job_id, args.chars, args.end), { target_kind: "process-input" }));
-  server.registerTool("host_process_list", { title: "List managed processes", description: "List processes started by this breakglass server.", inputSchema: empty, annotations: readOnlyAnnotations }, async () => executeTool(context, "host_process_list", async () => context.processes.list()));
+  server.registerTool("host_process_list", { title: "List/reconcile managed processes", description: "List processes started by this breakglass server. Pass job_id after an indeterminate host_process_output failure to perform one bounded manager-state reconciliation for that exact job id; this call never starts or retries a process.", inputSchema: { job_id: z.string().uuid().optional() }, annotations: readOnlyAnnotations }, async (args) => executeTool(context, "host_process_list", async () => args.job_id ? context.processes.reconcile(args.job_id) : context.processes.list()));
   server.registerTool("host_process_kill", { title: "Stop managed process", description: "Stop a process previously started by this breakglass server.", inputSchema: { job_id: z.string().uuid() }, annotations: writeAnnotations }, async (args) => executeTool(context, "host_process_kill", async () => context.processes.kill(args.job_id)));
 
   server.registerTool("host_git", { title: "Host Git", description: "Run bounded Git status/diff/log/branch/add/commit/fetch/fast-forward pull/push/merge inside an approved root.", inputSchema: { cwd: P, operation: z.enum(["status", "diff", "log", "branch", "add", "commit", "fetch", "pull", "push", "merge"]), paths: z.array(z.string().min(1)).max(500).optional(), message: z.string().max(500).optional(), remote: z.string().min(1).max(200).optional(), branch: z.string().min(1).max(300).optional(), ref: z.string().min(1).max(300).optional(), staged: z.boolean().default(false), expected_head: z.string().regex(/^[a-fA-F0-9]{40,64}$/).optional() }, annotations: writeAnnotations }, async (args) => executeTool(context, "host_git", () => hostGit(context, args), { root_id: rootForPath(context, args.cwd), target_kind: `git:${args.operation}` }));
@@ -349,7 +341,6 @@ function assertHash(content: string, expectedHash: string | undefined): void {
   const actual = createHash("sha256").update(content, "utf8").digest("hex");
   if (actual.toLowerCase() !== expectedHash.toLowerCase()) throw new Error(`File changed. expected_sha256=${expectedHash} actual_sha256=${actual}`);
 }
-function countOccurrences(haystack: string, needle: string): number { let count = 0; let offset = 0; while (true) { const next = haystack.indexOf(needle, offset); if (next < 0) return count; count += 1; offset = next + needle.length; } }
 function clampTimeout(context: HostBreakglassContext, requested?: number): number { return Math.min(requested ?? context.config.limits.default_timeout_ms, context.config.limits.max_timeout_ms); }
 function rootForPath(context: HostBreakglassContext, path: string): string | undefined {
   const lower = path.toLowerCase();
