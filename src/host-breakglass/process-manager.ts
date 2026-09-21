@@ -20,6 +20,10 @@ export type HostManagedProcessView = {
   stderr_tail: string;
 };
 
+export type HostManagedProcessReconciliation =
+  | { job_id: string; found: true; manager_state: "running" | "terminal"; job: HostManagedProcessView }
+  | { job_id: string; found: false; manager_state: "unknown"; note: string };
+
 type ManagedProcess = HostManagedProcessView & {
   child: ChildProcess;
   timer?: NodeJS.Timeout;
@@ -106,6 +110,25 @@ export class HostProcessManager {
   output(jobId: string): HostManagedProcessView {
     const job = this.require(jobId);
     return this.view(job);
+  }
+
+  reconcile(jobId: string): HostManagedProcessReconciliation {
+    const job = this.jobs.get(jobId);
+    if (!job) {
+      return {
+        job_id: jobId,
+        found: false,
+        manager_state: "unknown",
+        note: "This manager has no record for the job id. That is not evidence that an underlying OS process ended; never re-associate a managed job by PID alone."
+      };
+    }
+    const view = this.view(job);
+    return {
+      job_id: jobId,
+      found: true,
+      manager_state: view.status === "running" ? "running" : "terminal",
+      job: view
+    };
   }
 
   async input(jobId: string, chars: string, end = false): Promise<HostManagedProcessView> {

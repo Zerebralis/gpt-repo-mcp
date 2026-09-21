@@ -66,7 +66,8 @@ try {
   const readAlpha = expectOk(await call("host_read_file", { path: file }));
   assert(readAlpha.result.content === "alpha", "host_read_file did not return alpha");
 
-  expectOk(await call("host_edit_file", { path: file, old_text: "alpha", new_text: "beta" }));
+  const edit = expectOk(await call("host_edit_file", { path: file, old_text: "alpha", new_text: "beta" }));
+  assert(edit.result.replacement_count === 1 && edit.result.postcondition?.verified === true && /^[a-f0-9]{64}$/i.test(edit.result.pre_sha256) && /^[a-f0-9]{64}$/i.test(edit.result.post_sha256), "host_edit_file missing verified postcondition evidence");
   const readBeta = expectOk(await call("host_read_file", { path: file }));
   assert(readBeta.result.content === "beta", "host_edit_file did not produce beta");
 
@@ -107,6 +108,10 @@ try {
     timeout_ms: 5_000
   }));
   const jobId = started.result.job_id;
+  const reconciledStarted = expectOk(await call("host_process_list", { job_id: jobId })).result;
+  assert(reconciledStarted.found === true && reconciledStarted.job?.job_id === jobId, "host_process_list did not reconcile the exact managed job");
+  const unknownManaged = expectOk(await call("host_process_list", { job_id: "00000000-0000-4000-8000-000000000001" })).result;
+  assert(unknownManaged.found === false && unknownManaged.manager_state === "unknown", "host_process_list did not keep unknown job identity separate");
   let job;
   for (let i = 0; i < 40; i += 1) {
     job = expectOk(await call("host_process_output", { job_id: jobId })).result;
