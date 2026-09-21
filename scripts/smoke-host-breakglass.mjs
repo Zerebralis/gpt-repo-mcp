@@ -67,7 +67,7 @@ try {
   assert(readAlpha.result.content === "alpha", "host_read_file did not return alpha");
 
   const edit = expectOk(await call("host_edit_file", { path: file, old_text: "alpha", new_text: "beta" }));
-  assert(edit.result.replacement_count === 1 && edit.result.postcondition?.verified === true && /^[a-f0-9]{64}$/i.test(edit.result.pre_sha256) && /^[a-f0-9]{64}$/i.test(edit.result.post_sha256), "host_edit_file missing verified postcondition evidence");
+  assert(edit.result.replacement_count === 1 && edit.result.postcondition?.verified === true && edit.result.postcondition?.method === "cas-claim+full-reread-sha256" && /^[a-f0-9]{64}$/i.test(edit.result.pre_sha256) && /^[a-f0-9]{64}$/i.test(edit.result.post_sha256), "host_edit_file missing verified postcondition evidence");
   const readBeta = expectOk(await call("host_read_file", { path: file }));
   assert(readBeta.result.content === "beta", "host_edit_file did not produce beta");
 

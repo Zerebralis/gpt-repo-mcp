@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -57,7 +57,7 @@ describe("host_edit_file postconditions", () => {
     expect(result.matched_spans_truncated).toBe(false);
     expect(result.postcondition).toMatchObject({
       verified: true,
-      method: "full-reread-sha256",
+      method: "cas-claim+full-reread-sha256",
       expected_post_sha256: postSha256
     });
     expect(post).toContain(newText);
@@ -91,6 +91,46 @@ describe("host_edit_file postconditions", () => {
       expected_sha256: "0".repeat(64)
     })).rejects.toThrow(/File changed/i);
     expect(await readFile(file, "utf8")).toBe("same\nsame\n");
+  });
+
+  it("does not clobber a writer that changes the file after the initial read", async () => {
+    const { root, context } = await fixture();
+    const file = join(root, "race.txt");
+    await writeFile(file, "alpha\n", "utf8");
+
+    await expect(hostEditFile(context, {
+      path: file,
+      old_text: "alpha",
+      new_text: "beta"
+    }, {
+      beforeCommit: async () => {
+        await writeFile(file, "external\n", "utf8");
+      }
+    })).rejects.toThrow(/changed during edit/i);
+
+    expect(await readFile(file, "utf8")).toBe("external\n");
+    expect((await readdir(root)).filter((name) => name.endsWith(".edit.bak"))).toHaveLength(0);
+  });
+
+  it("does not overwrite a writer that recreates the path during the commit claim", async () => {
+    const { root, context } = await fixture();
+    const file = join(root, "claim-race.txt");
+    await writeFile(file, "alpha\n", "utf8");
+
+    await expect(hostEditFile(context, {
+      path: file,
+      old_text: "alpha",
+      new_text: "beta"
+    }, {
+      afterClaim: async () => {
+        await writeFile(file, "contender\n", "utf8");
+      }
+    })).rejects.toThrow(/Concurrent writer recreated|preserved/i);
+
+    expect(await readFile(file, "utf8")).toBe("contender\n");
+    const backups = (await readdir(root)).filter((name) => name.endsWith(".edit.bak"));
+    expect(backups).toHaveLength(1);
+    expect(await readFile(join(root, backups[0]), "utf8")).toBe("alpha\n");
   });
 
   it("reports replace-all count while bounding span evidence", async () => {

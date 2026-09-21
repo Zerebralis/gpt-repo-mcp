@@ -52,7 +52,10 @@ describe("host breakglass policy", () => {
       "Get-Service; Format-List Name,Status",
       "Get-ChildItem & Format-Wide Name",
       "Write-Output 'literal; format.exe C:'",
-      'Write-Output "literal | bcdedit /enum"'
+      'Write-Output "literal | bcdedit /enum"',
+      'cmd.exe /cecho harmless',
+      '& "e$($null)cho" harmless',
+      'cmd.exe /c "e%BGR1_OR%cho harmless"'
     ];
     for (const command of harmless) {
       expect(safeBlockLabels(command), command).not.toContain("disk/boot tooling");
@@ -67,6 +70,12 @@ describe("host breakglass policy", () => {
       "Get-Date | C:\\Windows\\System32\\bootrec.exe /?",
       "Get-Date & 'C:\\Windows\\System32\\reagentc.exe' /info",
       'cmd.exe /c "C:\\Windows\\System32\\bcdedit.exe /enum"',
+      'cmd.exe /cformat /?',
+      'cmd.exe /d /s /c "bcdedit /enum"',
+      'cmd.exe /c "format /?',
+      '. format.com /?',
+      '& "fo$($null)rmat" /?',
+      'cmd.exe /c "f%BGR1_OR%mat /?"',
       '& "C:\\Windows\\System32\\diskpart.exe" /s disk.txt'
     ];
     for (const command of dangerous) {

@@ -76,14 +76,24 @@ export function safeBlockMatches(command: string): SafeBlockMatch[] {
 
 function findDiskBootCommand(command: string, baseOffset: number, depth = 0): SafeBlockMatch | undefined {
   for (const segment of splitCommandSegments(command)) {
-    const token = readLeadingToken(segment.text);
+    let token = readLeadingToken(segment.text);
     if (!token) continue;
 
+    if (token.value === ".") {
+      const invoked = readLeadingToken(segment.text.slice(token.end));
+      if (!invoked) continue;
+      token = {
+        value: invoked.value,
+        start: token.end + invoked.start,
+        end: token.end + invoked.end
+      };
+    }
+
     const normalized = normalizeCommandToken(token.value);
-    if (DISK_BOOT_TOOLS.has(normalized)) {
+    if (DISK_BOOT_TOOLS.has(normalized) || dynamicCommandCouldResolveToDiskBoot(token.value)) {
       return {
         label: "disk/boot tooling",
-        token: safeTokenLabel(token.value),
+        token: DISK_BOOT_TOOLS.has(normalized) ? safeTokenLabel(token.value) : "<dynamic-command>",
         span: {
           start: baseOffset + segment.start + token.start,
           end: baseOffset + segment.start + token.end
@@ -91,7 +101,7 @@ function findDiskBootCommand(command: string, baseOffset: number, depth = 0): Sa
       };
     }
 
-    if (depth === 0 && (normalized === "cmd")) {
+    if (depth === 0 && normalized === "cmd") {
       const nested = cmdPayload(segment.text, token.end);
       if (nested) {
         const nestedMatch = findDiskBootCommand(
@@ -183,6 +193,39 @@ function normalizeCommandToken(token: string): string {
   return win32.basename(token).replace(/\.(?:exe|com)$/i, "").toLowerCase();
 }
 
+function dynamicCommandCouldResolveToDiskBoot(token: string): boolean {
+  const dynamicPatterns = [
+    /%[^%\r\n]+%/g,
+    /![^!\r\n]+!/g,
+    /\$\([^)]*\)/g,
+    /\$env:[A-Za-z_][A-Za-z0-9_]*/gi,
+    /\$[A-Za-z_][A-Za-z0-9_]*/g
+  ];
+  let skeleton = token;
+  let dynamic = false;
+  for (const pattern of dynamicPatterns) {
+    const next = skeleton.replace(pattern, () => {
+      dynamic = true;
+      return "";
+    });
+    skeleton = next;
+  }
+  if (!dynamic) return false;
+
+  const normalizedSkeleton = normalizeCommandToken(skeleton);
+  if (normalizedSkeleton.length === 0) return true;
+  return [...DISK_BOOT_TOOLS].some((tool) => isSubsequence(normalizedSkeleton, tool));
+}
+
+function isSubsequence(candidate: string, target: string): boolean {
+  let index = 0;
+  for (const char of target) {
+    if (candidate[index] === char) index += 1;
+    if (index === candidate.length) return true;
+  }
+  return false;
+}
+
 function safeTokenLabel(token: string): string {
   return win32.basename(token).slice(0, 120);
 }
@@ -190,15 +233,30 @@ function safeTokenLabel(token: string): string {
 function cmdPayload(text: string, afterCommand: number): { text: string; start: number } | undefined {
   let index = afterCommand;
   while (index < text.length && /\s/.test(text[index])) index += 1;
-  const switchMatch = /^\/(?:c|k)\b/i.exec(text.slice(index));
-  if (!switchMatch) return undefined;
-  index += switchMatch[0].length;
-  while (index < text.length && /\s/.test(text[index])) index += 1;
-  if (index >= text.length) return undefined;
 
-  const raw = text.slice(index);
-  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
-    return { text: raw.slice(1, -1), start: index + 1 };
+  while (index < text.length) {
+    if (text[index] !== "/") return undefined;
+    const tail = text.slice(index);
+    if (/^\/[ck]/i.test(tail)) {
+      index += 2;
+      while (index < text.length && /\s/.test(text[index])) index += 1;
+      if (index >= text.length) return undefined;
+
+      let raw = text.slice(index);
+      let start = index;
+      const quote = raw[0] === '"' || raw[0] === "'" ? raw[0] : undefined;
+      if (quote) {
+        raw = raw.slice(1);
+        start += 1;
+        if (raw.endsWith(quote)) raw = raw.slice(0, -1);
+      }
+      return raw.length > 0 ? { text: raw, start } : undefined;
+    }
+
+    const option = /^\/(?:d|s|q|a|u|e:(?:on|off)|f:(?:on|off)|v:(?:on|off))(?=\s|$)/i.exec(tail);
+    if (!option) return undefined;
+    index += option[0].length;
+    while (index < text.length && /\s/.test(text[index])) index += 1;
   }
-  return { text: raw, start: index };
+  return undefined;
 }

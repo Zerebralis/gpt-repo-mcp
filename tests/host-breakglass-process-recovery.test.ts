@@ -25,7 +25,7 @@ describe("managed process observation recovery", () => {
     const manager = new HostProcessManager(4, 4096);
     const started = manager.start({
       executable: process.execPath,
-      args: ["-e", "process.stdout.write('READY\\n'); setTimeout(()=>process.exit(0),700)"],
+      args: ["-e", "process.stdout.write('READY\\n'); process.stdin.resume(); process.stdin.once('data',()=>process.exit(0))"],
       cwd: root
     });
 
@@ -52,6 +52,7 @@ describe("managed process observation recovery", () => {
     });
     expect(manager.list().filter((job) => job.job_id === started.job_id)).toHaveLength(1);
 
+    await manager.input(started.job_id, "finish\n", true);
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const state = manager.reconcile(started.job_id);
       if (state.found && state.manager_state === "terminal") break;
@@ -77,7 +78,7 @@ describe("managed process observation recovery", () => {
     const manager = new HostProcessManager(4, 4096);
     const known = manager.start({
       executable: process.execPath,
-      args: ["-e", "setTimeout(()=>process.exit(0),150)"],
+      args: ["-e", "process.stdin.resume(); process.stdin.once('data',()=>process.exit(0))"],
       cwd: root
     });
     const unknownId = randomUUID();
@@ -97,6 +98,12 @@ describe("managed process observation recovery", () => {
     });
     expect(known.job_id).not.toBe(unknownId);
 
-    await delay(250);
+    await manager.input(known.job_id, "finish\n", true);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const state = manager.reconcile(known.job_id);
+      if (state.found && state.manager_state === "terminal") break;
+      await delay(10);
+    }
+    expect(manager.reconcile(known.job_id)).toMatchObject({ found: true, manager_state: "terminal" });
   });
 });
