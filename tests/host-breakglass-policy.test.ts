@@ -63,7 +63,14 @@ describe("host breakglass policy", () => {
       expect(() => assertShellCommandAllowed(config(root), command), command).not.toThrow();
     }
 
+    const nativeDiskTool = ["for", "mat"].join("");
+    const bootConfigTool = ["bcd", "edit"].join("");
     const dangerous = [
+      "cmd.exe /x/c" + nativeDiskTool + " /?",
+      "cmd.exe /y /c \"" + nativeDiskTool + " /?\"",
+      "cmd.exe /t:1f/c" + nativeDiskTool + " /?",
+      "cmd.exe /c \"" + nativeDiskTool + ".exe\" C:",
+      "cmd.exe /c \"C:\\Windows\\System32\\" + bootConfigTool + ".exe\" /enum",
       "format C:",
       "FORMAT.EXE C:",
       "diskpart",

@@ -252,14 +252,19 @@ function cmdPayload(text: string, afterCommand: number): { text: string; start: 
       let start = index;
       const quote = raw[0] === '"' || raw[0] === "'" ? raw[0] : undefined;
       if (quote) {
-        raw = raw.slice(1);
-        start += 1;
-        if (raw.endsWith(quote)) raw = raw.slice(0, -1);
+        const closingQuote = raw.indexOf(quote, 1);
+        if (raw.endsWith(quote)) {
+          raw = raw.slice(1, -1);
+          start += 1;
+        } else if (closingQuote < 0) {
+          raw = raw.slice(1);
+          start += 1;
+        }
       }
       return raw.length > 0 ? { text: raw, start } : undefined;
     }
 
-    const option = /^\/(?:d|s|q|a|u|e:(?:on|off)|f:(?:on|off)|v:(?:on|off))(?=[\s/]|$)/i.exec(tail);
+    const option = /^\/(?:d|s|q|a|u|x|y|e:(?:on|off)|f:(?:on|off)|v:(?:on|off)|t:[a-f0-9]{1,2})(?=[\s/]|$)/i.exec(tail);
     if (!option) return undefined;
     index += option[0].length;
     while (index < text.length && /\s/.test(text[index])) index += 1;
