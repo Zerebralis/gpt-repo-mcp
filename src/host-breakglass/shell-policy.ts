@@ -141,7 +141,7 @@ function splitCommandSegments(command: string): Array<{ text: string; start: num
       quote = char;
       continue;
     }
-    if (char === ";" || char === "|" || char === "&") {
+    if (char === ";" || char === "|" || char === "&" || char === "\r" || char === "\n") {
       segments.push({ text: command.slice(start, index), start });
       start = index + 1;
     }
@@ -257,36 +257,69 @@ function safeTokenLabel(token: string): string {
 
 function cmdPayload(text: string, afterCommand: number): { text: string; start: number } | undefined {
   let index = afterCommand;
-  while (index < text.length && /\s/.test(text[index])) index += 1;
 
   while (index < text.length) {
-    if (text[index] !== "/") return undefined;
-    const tail = text.slice(index);
-    if (/^\/[ck]/i.test(tail)) {
-      index += 2;
+    const relative = readLeadingToken(text.slice(index));
+    if (!relative) return undefined;
+    const token = {
+      value: relative.value,
+      start: index + relative.start,
+      end: index + relative.end
+    };
+    const parsed = parseCmdSwitchSequence(token.value);
+    if (!parsed) return undefined;
+
+    if (parsed.command) {
+      if (parsed.payloadSuffix.length > 0) {
+        const raw = parsed.payloadSuffix + text.slice(token.end);
+        return raw.length > 0 ? { text: raw, start: token.start } : undefined;
+      }
+
+      index = token.end;
       while (index < text.length && /\s/.test(text[index])) index += 1;
       if (index >= text.length) return undefined;
-
-      let raw = text.slice(index);
-      let start = index;
-      const quote = raw[0] === '"' || raw[0] === "'" ? raw[0] : undefined;
-      if (quote) {
-        const closingQuote = raw.indexOf(quote, 1);
-        if (raw.endsWith(quote)) {
-          raw = raw.slice(1, -1);
-          start += 1;
-        } else if (closingQuote < 0) {
-          raw = raw.slice(1);
-          start += 1;
-        }
-      }
-      return raw.length > 0 ? { text: raw, start } : undefined;
+      return normalizeCmdPayload(text.slice(index), index);
     }
 
-    const option = /^\/(?:d|s|q|a|u|x|y|e:(?:on|off)|f:(?:on|off)|v:(?:on|off)|t:[a-f0-9]{1,2})(?=[\s/]|$)/i.exec(tail);
-    if (!option) return undefined;
-    index += option[0].length;
-    while (index < text.length && /\s/.test(text[index])) index += 1;
+    index = token.end;
   }
   return undefined;
+}
+
+function parseCmdSwitchSequence(value: string): { command: boolean; payloadSuffix: string } | undefined {
+  let cursor = 0;
+  let sawOption = false;
+
+  while (cursor < value.length) {
+    while (cursor < value.length && /[,;=]/.test(value[cursor])) cursor += 1;
+    if (cursor >= value.length) return sawOption ? { command: false, payloadSuffix: "" } : undefined;
+
+    const tail = value.slice(cursor);
+    const command = /^\/[ck]/i.exec(tail);
+    if (command) {
+      return { command: true, payloadSuffix: tail.slice(command[0].length) };
+    }
+
+    const option = /^\/(?:d|s|q|a|u|x|y|e:(?:on|off)|f:(?:on|off)|v:(?:on|off)|t:[a-f0-9]{1,2})(?=\/|[,;=]|$)/i.exec(tail);
+    if (!option) return undefined;
+    sawOption = true;
+    cursor += option[0].length;
+  }
+
+  return sawOption ? { command: false, payloadSuffix: "" } : undefined;
+}
+
+function normalizeCmdPayload(raw: string, start: number): { text: string; start: number } | undefined {
+  const quote = raw[0] === '"' || raw[0] === "'" ? raw[0] : undefined;
+  if (quote) {
+    const closingQuote = raw.indexOf(quote, 1);
+    if (raw.endsWith(quote)) {
+      raw = raw.slice(1, -1);
+      start += 1;
+    } else if (closingQuote < 0) {
+      raw = raw.slice(1);
+      start += 1;
+    }
+  }
+  return raw.length > 0 ? { text: raw, start } : undefined;
 }
