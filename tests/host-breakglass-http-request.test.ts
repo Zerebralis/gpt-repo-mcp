@@ -184,6 +184,62 @@ describe("credentialed Host Breakglass HTTP", () => {
     expect(result.body).toContain("[");
   });
 
+  it("does not pull lookahead bytes into the visible body after an earlier redaction shrinks output", async () => {
+    const maxBytes = 64;
+    const secondStart = maxBytes + 2;
+    const filler = "x".repeat(secondStart - Buffer.byteLength(TEST_VALUE, "utf8"));
+    const payload = TEST_VALUE + filler + TEST_VALUE;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(payload, { status: 200, headers: { "content-type": "text/plain" } })
+    ));
+
+    const result = await hostHttpRequest(context({ max_response_body_bytes: maxBytes }), {
+      url: "https://api.example.test/v1",
+      credential_ref: "test-api",
+      max_body_bytes: maxBytes
+    });
+
+    expect(result.body_truncated).toBe(true);
+    expect(Buffer.byteLength(result.body, "utf8")).toBeLessThanOrEqual(maxBytes);
+    expect(result.body).toContain("[REDACTED]");
+    expect(result.body).not.toContain(TEST_VALUE.slice(0, 8));
+  });
+
+  it("redacts strict RFC3986 and escaped-forward-slash reflections", async () => {
+    const special = "a!b'c(d)e*f/g";
+    processExecMock.runProcessWithTail.mockResolvedValue(registryResult(special));
+    const strictEncoded = encodeURIComponent(special).replace(/[!'()*]/g, (char) =>
+      "%" + char.charCodeAt(0).toString(16).toUpperCase()
+    );
+    const jsonSlashEscaped = JSON.stringify(special).slice(1, -1).replace(/\//g, "\\/");
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response("strict=" + strictEncoded + "&json=" + jsonSlashEscaped, {
+        status: 200,
+        headers: { "content-type": "text/plain", "x-request-id": strictEncoded }
+      })
+    ));
+
+    const result = await hostHttpRequest(context(), {
+      url: "https://api.example.test/v1",
+      credential_ref: "test-api"
+    });
+
+    expect(result.body).not.toContain(strictEncoded);
+    expect(result.body).not.toContain(jsonSlashEscaped);
+    expect(result.headers["x-request-id"]).toBe("[REDACTED]");
+
+    const redirectFetch = vi.fn().mockResolvedValue(
+      new Response(null, { status: 307, headers: { location: "/next?echo=" + strictEncoded } })
+    );
+    vi.stubGlobal("fetch", redirectFetch);
+    await expect(hostHttpRequest(context(), {
+      url: "https://api.example.test/v1",
+      credential_ref: "test-api"
+    })).rejects.toThrow(/reflected the configured credential/i);
+    expect(redirectFetch).toHaveBeenCalledTimes(1);
+  });
+
   it("validates URL policy before reading the configured value", async () => {
     vi.stubGlobal("fetch", vi.fn());
 

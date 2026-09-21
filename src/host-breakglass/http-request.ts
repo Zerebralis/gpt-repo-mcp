@@ -277,9 +277,8 @@ async function buildResponseResult(
     const variants = secretVariants(secret);
     const lookaheadBytes = Math.max(0, ...variants.map((variant) => Buffer.byteLength(variant, "utf8")));
     const bounded = await readBoundedBody(response, maxBodyBytes, lookaheadBytes);
-    const redactedInspectionBody = redactSecret(bounded.body, secret);
-    body = truncateUtf8Bytes(redactedInspectionBody, maxBodyBytes);
-    bodyTruncated = bounded.truncated || Buffer.byteLength(redactedInspectionBody, "utf8") > maxBodyBytes;
+    body = redactVisibleBody(bounded.buffer, maxBodyBytes, variants);
+    bodyTruncated = bounded.truncated;
   } catch {
     throw new Error("Credentialed HTTPS response body could not be read safely.");
   }
@@ -307,9 +306,9 @@ async function readBoundedBody(
   response: Response,
   maxBodyBytes: number,
   lookaheadBytes: number
-): Promise<{ body: string; truncated: boolean }> {
+): Promise<{ buffer: Buffer; truncated: boolean }> {
   if (maxBodyBytes === 0 || !response.body) {
-    return { body: "", truncated: Boolean(response.body && maxBodyBytes === 0) };
+    return { buffer: Buffer.alloc(0), truncated: Boolean(response.body && maxBodyBytes === 0) };
   }
 
   const inspectionLimit = maxBodyBytes + Math.max(0, lookaheadBytes);
@@ -338,9 +337,9 @@ async function readBoundedBody(
     reader.releaseLock();
   }
 
-  const buffer = Buffer.concat(chunks);
-  truncated ||= buffer.length > maxBodyBytes;
-  return { body: buffer.subarray(0, inspectionLimit).toString("utf8"), truncated };
+  const collectedBuffer = Buffer.concat(chunks);
+  truncated ||= collectedBuffer.length > maxBodyBytes;
+  return { buffer: collectedBuffer.subarray(0, inspectionLimit), truncated };
 }
 
 function secretVariants(secret: string): string[] {
@@ -349,10 +348,17 @@ function secretVariants(secret: string): string[] {
 
   try {
     const encoded = encodeURIComponent(secret);
+    const strictEncoded = encoded.replace(/[!'()*]/g, (char) =>
+      "%" + char.charCodeAt(0).toString(16).toUpperCase()
+    );
     variants.add(encoded);
+    variants.add(strictEncoded);
     variants.add(encoded.replace(/%20/gi, "+"));
+    variants.add(strictEncoded.replace(/%20/gi, "+"));
     variants.add(encoded.replace(/%[0-9A-F]{2}/g, (match) => match.toLowerCase()));
+    variants.add(strictEncoded.replace(/%[0-9A-F]{2}/g, (match) => match.toLowerCase()));
     variants.add(encoded.replace(/%20/gi, "+").replace(/%[0-9A-F]{2}/g, (match) => match.toLowerCase()));
+    variants.add(strictEncoded.replace(/%20/gi, "+").replace(/%[0-9A-F]{2}/g, (match) => match.toLowerCase()));
   } catch {
     // Raw matching remains available.
   }
@@ -366,7 +372,11 @@ function secretVariants(secret: string): string[] {
 
   try {
     const jsonEncoded = JSON.stringify(secret);
-    if (jsonEncoded.length >= 2) variants.add(jsonEncoded.slice(1, -1));
+    if (jsonEncoded.length >= 2) {
+      const jsonContent = jsonEncoded.slice(1, -1);
+      variants.add(jsonContent);
+      variants.add(jsonContent.replace(/\//g, "\\/"));
+    }
   } catch {
     // Raw matching remains available.
   }
@@ -386,6 +396,45 @@ function redactSecret(value: string, secret: string): string {
     redacted = redacted.replaceAll(variant, "[REDACTED]");
   }
   return redacted;
+}
+
+function redactVisibleBody(source: Buffer, maxBodyBytes: number, variants: string[]): string {
+  const visibleLimit = Math.min(Math.max(0, maxBodyBytes), source.length);
+  if (visibleLimit === 0) return "";
+
+  const encodedVariants = variants
+    .map((variant) => Buffer.from(variant, "utf8"))
+    .filter((variant) => variant.length > 0)
+    .sort((left, right) => right.length - left.length);
+  const placeholder = Buffer.from("[REDACTED]", "utf8");
+  const chunks: Buffer[] = [];
+  let cursor = 0;
+
+  while (cursor < visibleLimit) {
+    let nextIndex = -1;
+    let nextVariant: Buffer | undefined;
+
+    for (const variant of encodedVariants) {
+      const index = source.indexOf(variant, cursor);
+      if (index < 0 || index >= visibleLimit) continue;
+      if (
+        nextIndex < 0 ||
+        index < nextIndex ||
+        (index === nextIndex && (!nextVariant || variant.length > nextVariant.length))
+      ) {
+        nextIndex = index;
+        nextVariant = variant;
+      }
+    }
+
+    if (nextIndex < 0 || !nextVariant) break;
+    if (nextIndex > cursor) chunks.push(source.subarray(cursor, nextIndex));
+    chunks.push(placeholder);
+    cursor = nextIndex + nextVariant.length;
+  }
+
+  if (cursor < visibleLimit) chunks.push(source.subarray(cursor, visibleLimit));
+  return truncateUtf8Bytes(Buffer.concat(chunks).toString("utf8"), maxBodyBytes);
 }
 
 function truncateUtf8Bytes(value: string, maxBytes: number): string {
