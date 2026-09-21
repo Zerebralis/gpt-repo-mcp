@@ -14,6 +14,8 @@ function config(root: string, mode: "safe" | "full" = "safe") {
   });
 }
 
+const windowsIt = process.platform === "win32" ? it : it.skip;
+
 describe("host breakglass policy", () => {
   it("requires full mode before full_host_access", () => {
     expect(() => HostBreakglassConfigSchema.parse({ enabled: true, mode: "safe", full_host_access: true })).toThrow();
@@ -50,14 +52,13 @@ describe("host breakglass policy", () => {
     const harmless = [
       "Get-Process | Format-Table -AutoSize",
       "Get-Service; Format-List Name,Status",
-      "Get-ChildItem & Format-Wide Name",
+      "Get-ChildItem | Format-Wide Name",
       "Write-Output 'literal; format.exe C:'",
       'Write-Output "literal | bcdedit /enum"',
       'cmd.exe /cecho harmless',
       'cmd.exe /c wh"oa"mi.exe',
       'cmd.exe /c formatter/?',
       'cmd.exe /c "formatter.exe " /?',
-      '& "e$($null)cho" harmless',
       'cmd.exe /c "e%BGR1_OR%cho harmless"',
       "Write-Output 'Start-Process diskpart'",
       "Get-Command Start-Process",
@@ -143,6 +144,28 @@ describe("host breakglass policy", () => {
       expect(safeBlockLabels(command), command).toContain("command indirection");
       expect(() => assertShellCommandAllowed(config(root), command), command).toThrow(/(?:command indirection|disk\/boot tooling)/i);
     }
+  });
+
+  windowsIt("walks nested PowerShell AST command nodes and blocks the reviewed escape classes", () => {
+    const root = tmpdir();
+    const nested = [
+      "if ($true) { diskpart }",
+      "foreach ($i in 1) { diskpart }",
+      "while ($true) { diskpart; break }",
+      "Measure-Command { diskpart }",
+      "Start-Job { diskpart }",
+      "1 | ForEach-Object { diskpart }",
+      "wmic process call create diskpart"
+    ];
+    for (const command of nested) {
+      expect(safeBlockLabels(command).length, command).toBeGreaterThan(0);
+      expect(() => assertShellCommandAllowed(config(root), command), command).toThrow(/blocked/i);
+    }
+
+    expect(() => assertShellCommandAllowed(config(root), "if ($true) { Write-Output ok }"))
+      .not.toThrow();
+    expect(() => assertShellCommandAllowed(config(root), "Measure-Command { Write-Output ok }"))
+      .not.toThrow();
   });
 
   it("checks structured process starts without blocking safe interpreter payloads", () => {

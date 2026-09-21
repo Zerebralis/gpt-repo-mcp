@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { win32 } from "node:path";
 import type { HostBreakglassConfig } from "./config.js";
 
@@ -5,6 +6,19 @@ type SafeBlockMatch = {
   label: string;
   token?: string;
   span?: { start: number; end: number };
+};
+
+type PowerShellAstCommand = {
+  name?: string | null;
+  text: string;
+  start: number;
+  end: number;
+  elements: string[];
+};
+
+type PowerShellAstResult = {
+  parse_errors: string[];
+  commands: PowerShellAstCommand[];
 };
 
 const DISK_BOOT_TOOLS = new Set(["diskpart", "format", "bcdedit", "bootrec", "reagentc"]);
@@ -17,6 +31,32 @@ const SHELL_COMMAND_INDIRECTORS = new Set([
   "powershell", "pwsh",
   "function", "filter"
 ]);
+
+const POWERSHELL_AST_CACHE = new Map<string, SafeBlockMatch | null>();
+const POWERSHELL_AST_CACHE_MAX = 128;
+
+const POWERSHELL_AST_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$source = [Console]::In.ReadToEnd()
+$tokens = $null
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
+$commands = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object {
+  $elements = @($_.CommandElements | ForEach-Object { $_.Extent.Text })
+  [pscustomobject]@{
+    name = $_.GetCommandName()
+    text = $_.Extent.Text
+    start = $_.Extent.StartOffset
+    end = $_.Extent.EndOffset
+    elements = $elements
+  }
+})
+[pscustomobject]@{
+  parse_errors = @($errors | ForEach-Object { $_.Message })
+  commands = $commands
+} | ConvertTo-Json -Compress -Depth 8
+`;
 
 const SAFE_BLOCK_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
   { label: "host shutdown/restart", pattern: /\b(shutdown(?:\.exe)?|restart-computer|stop-computer)\b/i },
@@ -128,6 +168,10 @@ export function safeBlockMatches(command: string, surface: "shell" | "process" =
   if (surface === "shell") {
     const indirection = findShellCommandIndirection(command, 0);
     if (indirection) matches.push(indirection);
+    if (!diskBoot && !indirection && needsPowerShellAst(command)) {
+      const astBlock = findPowerShellAstBlock(command);
+      if (astBlock) matches.push(astBlock);
+    }
   }
 
   for (const entry of SAFE_BLOCK_PATTERNS) {
@@ -138,6 +182,113 @@ export function safeBlockMatches(command: string, surface: "shell" | "process" =
     });
   }
   return matches;
+}
+
+function needsPowerShellAst(command: string): boolean {
+  return /[{}]|\$\(|\bwmic(?:\.exe)?\b/i.test(command);
+}
+
+function findPowerShellAstBlock(command: string): SafeBlockMatch | undefined {
+  if (process.platform !== "win32") return undefined;
+  if (POWERSHELL_AST_CACHE.has(command)) return POWERSHELL_AST_CACHE.get(command) ?? undefined;
+  const result = computePowerShellAstBlock(command);
+  POWERSHELL_AST_CACHE.set(command, result ?? null);
+  if (POWERSHELL_AST_CACHE.size > POWERSHELL_AST_CACHE_MAX) {
+    const oldest = POWERSHELL_AST_CACHE.keys().next().value as string | undefined;
+    if (oldest) POWERSHELL_AST_CACHE.delete(oldest);
+  }
+  return result;
+}
+
+function computePowerShellAstBlock(command: string): SafeBlockMatch | undefined {
+
+  const parsed = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", POWERSHELL_AST_SCRIPT],
+    {
+      input: command,
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 5_000,
+      maxBuffer: 512 * 1024,
+      env: minimalHostEnv()
+    }
+  );
+
+  if (parsed.error || parsed.status !== 0 || !parsed.stdout?.trim()) {
+    return { label: "command indirection", token: "<policy-parser-unavailable>" };
+  }
+
+  let ast: PowerShellAstResult;
+  try {
+    ast = JSON.parse(parsed.stdout) as PowerShellAstResult;
+  } catch {
+    return { label: "command indirection", token: "<policy-parser-invalid-output>" };
+  }
+
+  const parseErrors = Array.isArray(ast.parse_errors)
+    ? ast.parse_errors
+    : ast.parse_errors ? [String(ast.parse_errors)] : [];
+  if (parseErrors.length > 0) {
+    return { label: "command indirection", token: "<powershell-parse-error>" };
+  }
+
+  const commands = Array.isArray(ast.commands)
+    ? ast.commands
+    : ast.commands ? [ast.commands as PowerShellAstCommand] : [];
+  for (const entry of commands) {
+    const name = typeof entry.name === "string" ? entry.name.trim() : "";
+    if (!name) {
+      return {
+        label: "command indirection",
+        token: "<dynamic-command>",
+        span: validAstSpan(entry) ? { start: entry.start, end: entry.end } : undefined
+      };
+    }
+
+    const directDiskBoot = matchDiskBootToken(name);
+    if (directDiskBoot) {
+      return {
+        label: "disk/boot tooling",
+        token: directDiskBoot.label,
+        span: validAstSpan(entry) ? { start: entry.start, end: entry.end } : undefined
+      };
+    }
+
+    const normalized = normalizeCommandToken(name);
+    if (SHELL_COMMAND_INDIRECTORS.has(normalized)) {
+      return {
+        label: "command indirection",
+        token: safeTokenLabel(name),
+        span: validAstSpan(entry) ? { start: entry.start, end: entry.end } : undefined
+      };
+    }
+
+    if (normalized === "cmd") {
+      const nestedDiskBoot = findDiskBootCommand(entry.text, entry.start);
+      if (nestedDiskBoot) return nestedDiskBoot;
+      const nestedIndirection = findShellCommandIndirection(entry.text, entry.start);
+      if (nestedIndirection) return nestedIndirection;
+    }
+
+    if (normalized === "wmic" && isWmicProcessCreate(entry.elements)) {
+      return {
+        label: "command indirection",
+        token: safeTokenLabel(name),
+        span: validAstSpan(entry) ? { start: entry.start, end: entry.end } : undefined
+      };
+    }
+  }
+  return undefined;
+}
+
+function validAstSpan(entry: PowerShellAstCommand): boolean {
+  return Number.isInteger(entry.start) && Number.isInteger(entry.end) && entry.start >= 0 && entry.end > entry.start;
+}
+
+function isWmicProcessCreate(elements: string[]): boolean {
+  const args = elements.slice(1).map((value) => value.trim().replace(/^["']|["']$/g, "").toLowerCase());
+  return args.length >= 3 && args[0] === "process" && args[1] === "call" && args[2] === "create";
 }
 
 function findDiskBootCommand(command: string, baseOffset: number, depth = 0): SafeBlockMatch | undefined {

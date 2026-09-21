@@ -40,9 +40,13 @@ reliably classified as a direct command: nested PowerShell, `Start-Process`,
 `Invoke-Expression`, `Invoke-Command`, alias/function creation, opaque `cmd.exe`
 argument layouts, and dynamic invocation operators are rejected. Use
 `host_process_start` for an explicit child process instead of escaping through
-free-form shell. When that process is itself `cmd.exe` or PowerShell, its
-structured argument list is inspected; opaque/encoded/script-file interpreter
-entry points require Full Mode rather than being treated as safely parsed.
+free-form shell. On Windows, commands that contain scriptblocks, subexpressions,
+or native process-creation indirection are additionally parsed with PowerShell's
+own AST; every nested `CommandAst` is inspected, while parser errors and dynamic
+command names fail closed. When an explicit managed process is itself `cmd.exe`
+or PowerShell, its structured argument list is inspected; opaque, encoded, or
+script-file interpreter entry points require Full Mode rather than being treated
+as safely parsed.
 
 ## Tool Surface
 
