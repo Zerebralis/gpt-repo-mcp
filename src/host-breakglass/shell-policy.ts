@@ -41,13 +41,18 @@ const SHELL_COMMAND_INDIRECTORS = new Set([
   "new-object",
   "set-alias", "sal",
   "new-alias", "nal",
+  "import-alias", "ipal",
+  "import-module", "ipmo",
+  "import-pssession", "ipsn", "enter-pssession", "etsn", "new-pssession", "nsn",
   "set-item", "si",
   "new-item", "ni",
   "start-job", "sajb", "start-threadjob",
   "powershell", "pwsh",
-  "forfiles", "schtasks", "at", "sc", "rundll32", "mshta", "wscript", "cscript", "regsvr32", "msiexec",
+  "wmic", "forfiles", "schtasks", "at", "sc", "rundll32", "mshta", "wscript", "cscript", "regsvr32", "msiexec",
   "function", "filter"
 ]);
+
+const CMD_CONTROL_INDIRECTORS = new Set(["call", "for", "if"]);
 
 const SCRIPT_EXECUTION_EXTENSIONS = new Set([
   ".ps1", ".psm1", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".hta", ".py", ".pl", ".rb", ".sh"
@@ -152,6 +157,14 @@ export function assertProcessStartAllowed(
     }
     assertPolicyMatchAllowed(config, approval, {
       label: parsed.kind === "encoded" ? "encoded PowerShell" : "command indirection",
+      token: safeTokenLabel(executable)
+    });
+    return;
+  }
+
+  if (SHELL_COMMAND_INDIRECTORS.has(normalized) || isScriptExecutionToken(executable)) {
+    assertPolicyMatchAllowed(config, approval, {
+      label: "command indirection",
       token: safeTokenLabel(executable)
     });
     return;
@@ -347,8 +360,8 @@ function isWmicProcessCreate(elements: string[]): boolean {
 }
 
 function containsWmicProcessCreate(args: string[]): boolean {
-  for (let index = 0; index <= args.length - 3; index += 1) {
-    if (args[index] === "process" && args[index + 1] === "call" && args[index + 2] === "create") return true;
+  for (let index = 0; index <= args.length - 2; index += 1) {
+    if (args[index] === "call" && args[index + 1] === "create") return true;
   }
   return false;
 }
@@ -447,6 +460,16 @@ function findShellCommandIndirection(command: string, baseOffset: number, depth 
   for (const segment of splitCommandSegments(command)) {
     const token = readLeadingToken(segment.text);
     if (!token) continue;
+    if (token.value === ".") {
+      return {
+        label: "command indirection",
+        token: "<dot-source>",
+        span: {
+          start: baseOffset + segment.start + token.start,
+          end: baseOffset + segment.start + token.end
+        }
+      };
+    }
     const normalized = normalizeCommandToken(token.value);
     if (SHELL_COMMAND_INDIRECTORS.has(normalized) || isScriptExecutionToken(token.value)) {
       return {
@@ -462,6 +485,18 @@ function findShellCommandIndirection(command: string, baseOffset: number, depth 
     if (depth < 4 && normalized === "cmd") {
       const nested = cmdPayload(segment.text, token.end);
       if (nested) {
+        const nestedToken = readLeadingToken(nested.text);
+        const nestedNormalized = nestedToken ? normalizeCmdLeadingToken(nestedToken.value) : "";
+        if (nestedToken && (CMD_CONTROL_INDIRECTORS.has(nestedNormalized) || SHELL_COMMAND_INDIRECTORS.has(nestedNormalized))) {
+          return {
+            label: "command indirection",
+            token: safeTokenLabel(nestedToken.value),
+            span: {
+              start: baseOffset + segment.start + nested.start + nestedToken.start,
+              end: baseOffset + segment.start + nested.start + nestedToken.end
+            }
+          };
+        }
         const nestedMatch = findShellCommandIndirection(
           nested.text,
           baseOffset + segment.start + nested.start,
@@ -648,6 +683,10 @@ function matchDiskBootToken(token: string): { label: string } | undefined {
 
 function normalizeCommandToken(token: string): string {
   return win32.basename(token.trim()).replace(/\.(?:exe|com)$/i, "").toLowerCase();
+}
+
+function normalizeCmdLeadingToken(token: string): string {
+  return normalizeCommandToken(token.replace(/^[(@]+/, ""));
 }
 
 function dynamicCommandCouldResolveToDiskBoot(token: string): boolean {

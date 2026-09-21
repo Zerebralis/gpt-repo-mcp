@@ -140,6 +140,15 @@ describe("host breakglass policy", () => {
       'Set-Alias foo diskpart; foo',
       'start diskpart',
       'Write-Output diskpart | cmd.exe',
+      '. .\\bypass.ps1',
+      'Import-Alias .\\aliases.csv; mycmd',
+      'Import-Module .\\bypass.psm1',
+      'cmd.exe /c call diskpart',
+      'cmd.exe /c if 1==1 diskpart',
+      'cmd.exe /c "for %A in (diskpart) do %A"',
+      'cmd.exe /c @call diskpart',
+      'cmd.exe /c (call diskpart)',
+      'cmd.exe /c @start diskpart',
       '& ("disk" + "part")',
       '. ($dynamicCommand)'
     ];
@@ -160,6 +169,7 @@ describe("host breakglass policy", () => {
       "1 | ForEach-Object { diskpart }",
       "wmic process call create diskpart",
       "wmic /node:127.0.0.1 process call create diskpart",
+      'wmic path win32_process call create CommandLine="diskpart"',
       'Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList "diskpart"',
       'Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine="diskpart"}',
       '[System.Diagnostics.Process]::Start( "diskpart" )',
@@ -203,6 +213,10 @@ describe("host breakglass policy", () => {
     expect(() => assertProcessStartAllowed(config(root), "cmd.exe", ["", "/c", "diskpart"]))
       .toThrow(/command indirection/i);
     expect(() => assertProcessStartAllowed(config(root), "cmd.exe", ["/c", "wmic", "process", "call", "create", "diskpart"]))
+      .toThrow(/command indirection/i);
+    expect(() => assertProcessStartAllowed(config(root), "wmic.exe", ["path", "win32_process", "call", "create", "cmd.exe /c echo harmless"]))
+      .toThrow(/command indirection/i);
+    expect(() => assertProcessStartAllowed(config(root), "forfiles.exe", ["/c", "cmd /c echo harmless"]))
       .toThrow(/command indirection/i);
     expect(() => assertProcessStartAllowed(config(root), "diskpart.exe", [])).toThrow(/disk\/boot tooling/i);
   });

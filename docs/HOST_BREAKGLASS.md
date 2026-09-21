@@ -46,10 +46,13 @@ own AST; every nested `CommandAst` is inspected, while parser errors and dynamic
 command names fail closed. Safe Mode also rejects unknown instance/member-method
 invocation, object/provider execution indirection, direct script/batch execution,
 and native Windows launcher primitives that can execute an opaque child command;
-those require Full Mode or a structured Breakglass primitive. When an explicit
-managed process is itself `cmd.exe` or PowerShell, its structured argument list
-is inspected; opaque, encoded, or script-file interpreter entry points require
-Full Mode rather than being treated as safely parsed.
+those require Full Mode or a structured Breakglass primitive. Known native launcher primitives are denied in Safe Mode on both the shell and
+managed-process surfaces. When an explicit managed process is itself `cmd.exe`
+or PowerShell, its structured argument list is inspected; opaque, encoded, or
+script-file interpreter entry points require Full Mode rather than being treated
+as safely parsed. Arbitrary executable programs remain arbitrary executable code:
+Safe Mode does not claim code containment or a sandbox for a deliberately hostile
+general-purpose runtime.
 
 ## Tool Surface
 
