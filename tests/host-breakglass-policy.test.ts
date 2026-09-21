@@ -85,6 +85,8 @@ describe("host breakglass policy", () => {
       'cmd.exe /c format.exe/?',
       'cmd.exe /c C:\\Windows\\System32\\format.exe/?',
       'cmd.exe /c "format.exe " /?',
+      'cmd.exe /c "format "^ /y C:',
+      'cmd.exe /c cmd.exe /c format/?',
       'cmd.exe /d/cformat /?',
       'cmd.exe /d/s/c "bcdedit /enum"',
       'cmd.exe /d /s /c "bcdedit /enum"',

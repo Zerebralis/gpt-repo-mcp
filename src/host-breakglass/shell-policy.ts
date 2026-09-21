@@ -102,7 +102,7 @@ function findDiskBootCommand(command: string, baseOffset: number, depth = 0): Sa
       };
     }
 
-    if (depth === 0 && normalized === "cmd") {
+    if (depth < 4 && normalized === "cmd") {
       const nested = cmdPayload(segment.text, token.end);
       if (nested) {
         const nestedMatch = findDiskBootCommand(
@@ -205,7 +205,7 @@ function matchDiskBootToken(token: string): { label: string } | undefined {
 
   for (const tool of DISK_BOOT_TOOLS) {
     const attachedSwitch = new RegExp(
-      `(?:^|[\\\\/])(${tool}(?:\\.(?:exe|com))?)(?=\\/|$)`,
+      `(?:^|[\\\\/])(${tool}(?:\\.(?:exe|com))?)(?=\\s|\\/|$)`,
       "i"
     ).exec(trimmed);
     if (attachedSwitch) return { label: attachedSwitch[1].slice(0, 120) };
