@@ -34,22 +34,25 @@ const SAFE_RESPONSE_HEADERS = [
   "x-ratelimit-reset"
 ] as const;
 
+const MAX_CREDENTIAL_BYTES = 16 * 1024;
+
 export function buildWindowsUserEnvQueryArgs(name: string): string[] {
   return ["query", "HKCU\\Environment", "/v", name];
 }
 
 export function parseWindowsUserEnvValue(output: string, name: string): string | undefined {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp("^\\s*" + escaped + "\\s+REG_(?:SZ|EXPAND_SZ)\\s+(.*)$", "i");
-  for (const line of output.split(/\r?\n/)) {
-    const match = line.match(pattern);
+  for (const rawLine of output.split("\n")) {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    const candidate = line.trimStart();
+    if (!candidate.toLowerCase().startsWith(name.toLowerCase())) continue;
+    const remainder = candidate.slice(name.length);
+    const match = remainder.match(/^\s+REG_(?:SZ|EXPAND_SZ)(?: {4}|\t)(.*)$/i);
     if (!match) continue;
-    const value = match[1]?.trim();
-    if (value) return value;
+    const value = match[1] ?? "";
+    if (value.length > 0) return value;
   }
   return undefined;
 }
-
 export async function resolveConfiguredCredential(
   context: HostBreakglassContext,
   credentialRef: string
@@ -78,7 +81,9 @@ export async function resolveConfiguredCredential(
   }
 
   const value = parseWindowsUserEnvValue(result.stdout_tail, binding.name);
-  if (!value) throw new Error("Configured credential is unavailable.");
+  if (!value || Buffer.byteLength(value, "utf8") > MAX_CREDENTIAL_BYTES) {
+    throw new Error("Configured credential is unavailable.");
+  }
   return { binding, secret: value };
 }
 
@@ -240,16 +245,20 @@ function assertNoSensitiveFields(value: unknown, seen = new Set<unknown>()): voi
   if (seen.has(value)) throw new Error("Request body must not contain circular references.");
   seen.add(value);
 
-  if (Array.isArray(value)) {
-    for (const entry of value) assertNoSensitiveFields(entry, seen);
-    return;
-  }
-
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (SENSITIVE_FIELD_NAME.test(key)) {
-      throw new Error("Credentialed HTTP rejects secret-like request body fields; use a configured credential reference instead.");
+  try {
+    if (Array.isArray(value)) {
+      for (const entry of value) assertNoSensitiveFields(entry, seen);
+      return;
     }
-    assertNoSensitiveFields(child, seen);
+
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (SENSITIVE_FIELD_NAME.test(key)) {
+        throw new Error("Credentialed HTTP rejects secret-like request body fields; use a configured credential reference instead.");
+      }
+      assertNoSensitiveFields(child, seen);
+    }
+  } finally {
+    seen.delete(value);
   }
 }
 
@@ -265,9 +274,12 @@ async function buildResponseResult(
   let body = "";
   let bodyTruncated = false;
   try {
-    const bounded = await readBoundedBody(response, maxBodyBytes);
-    body = redactSecret(bounded.body, secret);
-    bodyTruncated = bounded.truncated;
+    const variants = secretVariants(secret);
+    const lookaheadBytes = Math.max(0, ...variants.map((variant) => Buffer.byteLength(variant, "utf8")));
+    const bounded = await readBoundedBody(response, maxBodyBytes, lookaheadBytes);
+    const redactedInspectionBody = redactSecret(bounded.body, secret);
+    body = truncateUtf8Bytes(redactedInspectionBody, maxBodyBytes);
+    bodyTruncated = bounded.truncated || Buffer.byteLength(redactedInspectionBody, "utf8") > maxBodyBytes;
   } catch {
     throw new Error("Credentialed HTTPS response body could not be read safely.");
   }
@@ -279,7 +291,7 @@ async function buildResponseResult(
   }
 
   return {
-    url: url.toString(),
+    url: redactSecret(url.toString(), secret),
     method,
     status: response.status,
     ok: response.ok,
@@ -291,25 +303,32 @@ async function buildResponseResult(
   };
 }
 
-async function readBoundedBody(response: Response, maxBodyBytes: number): Promise<{ body: string; truncated: boolean }> {
-  if (maxBodyBytes === 0 || !response.body) return { body: "", truncated: Boolean(response.body && maxBodyBytes === 0) };
+async function readBoundedBody(
+  response: Response,
+  maxBodyBytes: number,
+  lookaheadBytes: number
+): Promise<{ body: string; truncated: boolean }> {
+  if (maxBodyBytes === 0 || !response.body) {
+    return { body: "", truncated: Boolean(response.body && maxBodyBytes === 0) };
+  }
 
+  const inspectionLimit = maxBodyBytes + Math.max(0, lookaheadBytes);
   const reader = response.body.getReader();
   const chunks: Buffer[] = [];
   let collected = 0;
   let truncated = false;
   try {
-    while (collected <= maxBodyBytes) {
+    while (collected <= inspectionLimit) {
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = Buffer.from(value);
-      const remaining = maxBodyBytes + 1 - collected;
+      const remaining = inspectionLimit + 1 - collected;
       if (remaining > 0) {
         const kept = chunk.subarray(0, remaining);
         chunks.push(kept);
         collected += kept.length;
       }
-      if (collected > maxBodyBytes || chunk.length > remaining) {
+      if (collected > inspectionLimit || chunk.length > remaining) {
         truncated = true;
         break;
       }
@@ -321,27 +340,59 @@ async function readBoundedBody(response: Response, maxBodyBytes: number): Promis
 
   const buffer = Buffer.concat(chunks);
   truncated ||= buffer.length > maxBodyBytes;
-  return { body: buffer.subarray(0, maxBodyBytes).toString("utf8"), truncated };
+  return { body: buffer.subarray(0, inspectionLimit).toString("utf8"), truncated };
+}
+
+function secretVariants(secret: string): string[] {
+  if (!secret) return [];
+  const variants = new Set<string>([secret]);
+
+  try {
+    const encoded = encodeURIComponent(secret);
+    variants.add(encoded);
+    variants.add(encoded.replace(/%20/gi, "+"));
+    variants.add(encoded.replace(/%[0-9A-F]{2}/g, (match) => match.toLowerCase()));
+    variants.add(encoded.replace(/%20/gi, "+").replace(/%[0-9A-F]{2}/g, (match) => match.toLowerCase()));
+  } catch {
+    // Raw matching remains available.
+  }
+
+  try {
+    const formEncoded = new URLSearchParams({ value: secret }).toString().slice("value=".length);
+    variants.add(formEncoded);
+  } catch {
+    // Raw matching remains available.
+  }
+
+  try {
+    const jsonEncoded = JSON.stringify(secret);
+    if (jsonEncoded.length >= 2) variants.add(jsonEncoded.slice(1, -1));
+  } catch {
+    // Raw matching remains available.
+  }
+
+  return [...variants].filter(Boolean).sort((left, right) => right.length - left.length);
 }
 
 function containsSecret(value: string, secret: string): boolean {
   if (!value || !secret) return false;
-  if (value.includes(secret)) return true;
-  try {
-    return value.includes(encodeURIComponent(secret));
-  } catch {
-    return false;
-  }
+  return secretVariants(secret).some((variant) => value.includes(variant));
 }
 
 function redactSecret(value: string, secret: string): string {
   if (!value || !secret) return value;
   let redacted = value;
-  const variants = new Set([secret, encodeURIComponent(secret)]);
-  for (const variant of variants) {
-    if (variant) redacted = redacted.replaceAll(variant, "[REDACTED]");
+  for (const variant of secretVariants(secret)) {
+    redacted = redacted.replaceAll(variant, "[REDACTED]");
   }
   return redacted;
+}
+
+function truncateUtf8Bytes(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  const buffer = Buffer.from(value, "utf8");
+  if (buffer.length <= maxBytes) return value;
+  return buffer.subarray(0, maxBytes).toString("utf8");
 }
 
 function isTimeoutError(error: unknown): boolean {

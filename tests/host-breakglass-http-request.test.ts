@@ -95,6 +95,22 @@ describe("credentialed Host Breakglass HTTP", () => {
     expect(JSON.stringify(processInput)).not.toContain(PROCESS_ENV_VALUE);
   });
 
+  it("preserves leading and trailing credential whitespace from the registry record", async () => {
+    const spaced = "  edge-value  ";
+    expect(parseWindowsUserEnvValue(
+      "\r\n    " + ENV_NAME + "    REG_SZ    " + spaced + "\r\n",
+      ENV_NAME
+    )).toBe(spaced);
+    expect(parseWindowsUserEnvValue(
+      "\r\n    " + ENV_NAME.toLowerCase() + "    REG_SZ    " + spaced + "\r\n",
+      ENV_NAME
+    )).toBe(spaced);
+
+    processExecMock.runProcessWithTail.mockResolvedValueOnce(registryResult(spaced));
+    const resolved = await resolveConfiguredCredential(context(), "test-api");
+    expect(resolved.secret).toBe(spaced);
+  });
+
   it("injects the configured credential host-side and redacts an echoed value", async () => {
     const fetchMock = vi.fn(async (_url: URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
@@ -120,6 +136,52 @@ describe("credentialed Host Breakglass HTTP", () => {
     expect(result.body).toContain("[REDACTED]");
     expect(result.headers["x-request-id"]).toBe("[REDACTED]");
     expect(JSON.stringify(result)).not.toContain(TEST_VALUE);
+  });
+
+  it("redacts JSON-escaped and form-encoded credential reflections", async () => {
+    const special = 'edge"\\ value';
+    processExecMock.runProcessWithTail.mockResolvedValue(registryResult(special));
+
+    const jsonEscaped = JSON.stringify(special).slice(1, -1);
+    const formEncoded = new URLSearchParams({ value: special }).toString().slice("value=".length);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response("json=" + jsonEscaped + "&form=" + formEncoded, {
+        status: 200,
+        headers: { "content-type": "text/plain", "x-request-id": formEncoded }
+      })
+    ));
+
+    const result = await hostHttpRequest(context(), {
+      url: "https://api.example.test/v1",
+      credential_ref: "test-api"
+    });
+
+    expect(result.body).not.toContain(special);
+    expect(result.body).not.toContain(jsonEscaped);
+    expect(result.body).not.toContain(formEncoded);
+    expect(result.headers["x-request-id"]).toBe("[REDACTED]");
+  });
+
+  it("does not leak a partial credential when response truncation cuts through a reflection", async () => {
+    const prefix = "echo=";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(prefix + TEST_VALUE + ":tail", {
+        status: 200,
+        headers: { "content-type": "text/plain" }
+      })
+    ));
+
+    const maxBytes = Buffer.byteLength(prefix, "utf8") + 7;
+    const result = await hostHttpRequest(context({ max_response_body_bytes: maxBytes }), {
+      url: "https://api.example.test/v1",
+      credential_ref: "test-api",
+      max_body_bytes: maxBytes
+    });
+
+    expect(result.body_truncated).toBe(true);
+    expect(Buffer.byteLength(result.body, "utf8")).toBeLessThanOrEqual(maxBytes);
+    expect(result.body).not.toContain(TEST_VALUE.slice(0, 7));
+    expect(result.body).toContain("[");
   });
 
   it("validates URL policy before reading the configured value", async () => {
@@ -160,6 +222,28 @@ describe("credentialed Host Breakglass HTTP", () => {
       credential_ref: "test-api",
       body: { model: "unit-test", api_key: "caller-value" }
     })).rejects.toThrow(/request body fields/i);
+  });
+
+  it("allows repeated references to the same non-sensitive body object but still rejects cycles", async () => {
+    const shared = { model: "unit-test" };
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(hostHttpRequest(context(), {
+      method: "POST",
+      url: "https://api.example.test/v1",
+      credential_ref: "test-api",
+      body: { left: shared, right: shared }
+    })).resolves.toMatchObject({ status: 200 });
+
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    await expect(hostHttpRequest(context(), {
+      method: "POST",
+      url: "https://api.example.test/v1",
+      credential_ref: "test-api",
+      body: cyclic
+    })).rejects.toThrow(/circular references/i);
   });
 
   it("fails closed for unknown and unavailable credential references", async () => {
@@ -226,6 +310,22 @@ describe("credentialed Host Breakglass HTTP", () => {
       credential_ref: "test-api"
     })).rejects.toThrow(/redirect limit exceeded/i);
     expect(limitedFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses form-encoded credential reflections in redirect targets", async () => {
+    const special = 'edge"\\ value';
+    processExecMock.runProcessWithTail.mockResolvedValue(registryResult(special));
+    const reflected = new URLSearchParams({ value: special }).toString().slice("value=".length);
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(null, { status: 307, headers: { location: "/next?echo=" + reflected } })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(hostHttpRequest(context(), {
+      url: "https://api.example.test/v1",
+      credential_ref: "test-api"
+    })).rejects.toThrow(/reflected the configured credential/i);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("sanitizes credential header-construction failures", async () => {
