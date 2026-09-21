@@ -8,6 +8,7 @@ import { nonDestructiveMutationAnnotations, readOnlyAnnotations, safeMutationAnn
 import type { HostBreakglassContext } from "./context.js";
 import { hostApplyChanges } from "./change-pack.js";
 import { hostFileHash, hostHttpProbe, hostReadMany } from "./diagnostics.js";
+import { hostHttpRequest } from "./http-request.js";
 import { hostListDirectory, hostReadFile, hostSearch, hostStat, hostWriteFile } from "./filesystem.js";
 import { hostGit } from "./git.js";
 import { assertShellCommandAllowed, minimalHostEnv } from "./shell-policy.js";
@@ -23,7 +24,7 @@ const changePackItem = z.discriminatedUnion("type", [
   z.object({ type: z.literal("write"), path: P, content: z.string(), create_directories: z.boolean().default(false), expected_old_sha256: sha256Value.optional(), expected_missing: z.boolean().default(false) }).strict(),
   z.object({ type: z.literal("replace"), path: P, find: z.string().min(1), replace: z.string(), replace_all: z.boolean().default(false), expected_old_sha256: sha256Value.optional() }).strict()
 ]);
-export const HOST_BREAKGLASS_TOOL_COUNT = 39;
+export const HOST_BREAKGLASS_TOOL_COUNT = 40;
 
 async function assertExistingWorkingDirectory(path: string): Promise<void> {
   let info;
@@ -110,6 +111,20 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
   server.registerTool("host_network_listeners", { title: "Network listeners", description: "List bounded local TCP listeners and UDP endpoints with owning process IDs.", inputSchema: empty, annotations: readOnlyAnnotations }, async () => executeTool(context, "host_network_listeners", () => hostNetworkListeners(context), { target_kind: "network-listeners" }));
   server.registerTool("host_port_owner", { title: "Port owner", description: "Resolve one local TCP/UDP port to listeners and owning process details.", inputSchema: { port: pos.max(65_535), protocol: z.enum(["TCP", "UDP"]).optional() }, annotations: readOnlyAnnotations }, async (args) => executeTool(context, "host_port_owner", () => hostPortOwner(context, args), { target_kind: `port:${args.port}` }));
   server.registerTool("host_http_probe", { title: "HTTP health probe", description: "Probe an HTTP endpoint with bounded response metadata/body. Safe mode is loopback-only; remote URLs require full-mode approval.", inputSchema: { url: z.string().url().max(4_000), method: z.enum(["HEAD", "GET"]).default("GET"), timeout_ms: pos.max(30_000).optional(), max_body_bytes: z.number().int().nonnegative().max(65_536).optional(), approval }, annotations: readOnlyAnnotations }, async (args) => executeTool(context, "host_http_probe", () => hostHttpProbe(context, args), { target_kind: "http-probe" }));
+  server.registerTool("host_http_request", {
+    title: "Credentialed HTTPS request",
+    description: "Send a bounded GET/POST HTTPS API request using a host-side configured credential reference.",
+    inputSchema: {
+      method: z.enum(["GET", "POST"]).default("GET"),
+      url: z.string().url().max(4_000),
+      credential_ref: z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/),
+      headers: z.record(z.string().min(1).max(200), z.string().max(8_192)).default({}),
+      body: z.record(z.string(), z.unknown()).optional(),
+      timeout_ms: pos.max(60_000).optional(),
+      max_body_bytes: z.number().int().nonnegative().max(1024 * 1024).optional()
+    },
+    annotations: nonDestructiveMutationAnnotations
+  }, async (args) => executeTool(context, "host_http_request", () => hostHttpRequest(context, args), { target_kind: "credentialed-https:" + new URL(args.url).hostname }));
   server.registerTool("host_task_list", { title: "List scheduled tasks", description: "List Windows Scheduled Tasks with bounded filtering.", inputSchema: { name_contains: z.string().max(300).optional(), limit: pos.max(1_000).optional() }, annotations: readOnlyAnnotations }, async (args) => executeTool(context, "host_task_list", () => hostScheduledTaskList(context, args), { target_kind: "scheduled-tasks" }));
   server.registerTool("host_task_get", { title: "Read scheduled task", description: "Read one Windows Scheduled Task, run status, actions, and triggers.", inputSchema: { name: z.string().min(1).max(300), path: z.string().max(300).optional() }, annotations: readOnlyAnnotations }, async (args) => executeTool(context, "host_task_get", () => hostScheduledTaskGet(context, args), { target_kind: `scheduled-task:${args.name}` }));
   server.registerTool("host_task_start", { title: "Start scheduled task", description: "Start an allowlisted Windows Scheduled Task, or use full-mode approval.", inputSchema: { name: z.string().min(1).max(300), path: z.string().max(300).optional(), approval }, annotations: safeMutationAnnotations }, async (args) => executeTool(context, "host_task_start", () => hostScheduledTaskControl(context, { action: "start", ...args }), { target_kind: `scheduled-task:${args.name}` }));

@@ -1,6 +1,6 @@
 # Host Breakglass Architecture / Decision Log
 
-Status: 2026-09-16
+Status: 2026-09-21
 
 This file records durable architectural decisions for Host Breakglass. Operational incidents and recovery procedures remain in `HOST_BREAKGLASS_RELIABILITY.md`; implemented tool details remain in `HOST_BREAKGLASS_TOOL_HARVEST.md`.
 
@@ -23,6 +23,32 @@ It is not an agent platform, memory system, project manager, general automation 
 When a stable bounded contract can represent an action, prefer a structured primitive over free-form shell. `host_shell` remains an intentional breakglass escape hatch.
 
 **Safe Mode is not a host sandbox.** Shell safety must not be presented as a sandbox merely by adding more regex rules. Structured primitives, explicit roots, allowlists, stale-state guards, and process-identity guards are preferred where practical.
+
+## Credentialed external HTTP is a structured host-side capability
+
+External API credentials are not a reason to broaden `host_shell` or turn
+`host_http_probe` into a general network client.
+
+Durable rules:
+
+- keep `host_http_probe` credential-free and diagnostic;
+- use a separate `host_http_request` primitive for bounded credentialed API
+  work;
+- the caller supplies only a stable credential reference;
+- the host resolves the value after target policy passes;
+- every credential reference is bound to an explicit authentication scheme and
+  exact allowed hosts;
+- credentialed transport is HTTPS-only;
+- cross-origin redirects fail closed;
+- full mode does not override credential-to-host policy;
+- request/response size and timeout limits remain enforced;
+- audit/logging must not contain credential values, request authentication,
+  request bodies, or response bodies;
+- upstream safety boundaries are documented, not evaded through encoding,
+  splitting, temporary files, or command indirection.
+
+This capability exists specifically to replace a recurring brittle
+shell/process composition with a smaller auditable contract.
 
 ## Safe defaults remain standard
 
