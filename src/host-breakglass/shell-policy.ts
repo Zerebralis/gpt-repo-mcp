@@ -205,7 +205,7 @@ function matchDiskBootToken(token: string): { label: string } | undefined {
 
   for (const tool of DISK_BOOT_TOOLS) {
     const attachedSwitch = new RegExp(
-      `(?:^|[\\\\/])(${tool}(?:\\.(?:exe|com))?)(?=\\s|\\/|,|=|$)`,
+      `(?:^|[\\\\/,;=(])(${tool}(?:\\.(?:exe|com))?)(?=\\s|\\/|[,;=)]|$)`,
       "i"
     ).exec(trimmed);
     if (attachedSwitch) return { label: attachedSwitch[1].slice(0, 120) };
