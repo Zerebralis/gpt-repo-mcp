@@ -32,6 +32,7 @@ describe("Host Breakglass supervised config reconciliation", () => {
       expectedFingerprint: "current",
       signal: controller.signal,
       pollMs: 1,
+      settleMs: 1,
       readPreflight: async () => {
         calls += 1;
         if (calls === 1) return { ok: false, reason: "host-breakglass config missing or invalid" };
