@@ -274,3 +274,55 @@ For the poll-liveness hardening, verification included:
 For the v2 tool-harvest acceptance on 2026-09-16, the live connector path additionally verified the 39-tool surface, structured read/diagnostic tools, Safe Mode boundaries, fresh control-plane polling, stable process identities, and a non-mutating `host_apply_changes` dry run.
 
 Keep this document as the first reference when future Breakglass incidents resemble 502, 404, or `tunnel_client_not_seen` failures.
+
+
+## BG-R1d follow-up: tool-name registry integrity
+
+The attachment handshake proves reachability, not that a particular client has the complete current tool catalog. A client can call `host_list_roots` successfully while exposing fewer tools or older input schemas. This follow-up adds bounded diagnostics; it does **not** claim to repair an external connector router or to prove that session reclamation causes catalog loss.
+
+`host_list_roots` now includes `backend_attachment.tool_manifest`; `host_connection_snapshot` includes `backend.tool_manifest`. Both contain the same manifest:
+
+- `scope: "tool_names_only"`;
+- `tool_count` and lexically sorted unique `tool_names`;
+- `tool_names_sha256`: SHA-256 of UTF-8 `JSON.stringify(sortedNames)` (no whitespace or trailing newline).
+
+The normal surface remains 42 tools. The manifest is checked against real MCP `tools/list` registration in a contract test. It deliberately does not attest input schemas, descriptions, permissions, review/publication state, or the freshness of platform metadata. An equal count alone is insufficient: different name sets have different fingerprints.
+
+For an explicit comparison, a caller can supply `incident.current_tool_snapshot` to `host_connection_snapshot`:
+
+```json
+{
+  "backend_instance_id": "00000000-0000-4000-8000-000000000001",
+  "inventory_complete": true,
+  "tool_count": 39,
+  "tool_names_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}
+```
+
+The example identifiers and hash are placeholders. Obtain the real instance identity from a successful current handshake and calculate the hash from an actually complete connector inventory. A filtered/deferred subset is not a complete inventory. The observation must describe the affected current context, not an independent control session. Caller observations remain untrusted diagnostic evidence and never grant authority.
+
+With a successful current handshake, a complete name-set mismatch bound to this live backend returns `capability_registry_mismatch`, `restart_local_runtime: false`, and `replay_mutation: false`. Incomplete, contradictory or differently bound observations return `inconclusive`. Without a tool snapshot the legacy handshake classification remains compatible, but reports `registry_integrity: "not_observed"`; it is not a complete-capability health claim. Matching names report `matched_names`, not schema/permission freshness.
+
+### Distinguish metadata maintenance from session loss
+
+Check the connector's supported metadata lifecycle before attributing a partial list to MCP pressure. OpenAI documents separate developer-mode refresh and published-tool review flows:
+
+- Developer-mode connections: refresh the connection's metadata, verify the advertised change, and test in a new conversation. A healthy, already-updated backend does not need a restart merely to refresh client metadata.
+- Published plugins: the live server and published definitions are distinct. New tools can be held for checks; changed tools can retain their previous definition until checks finish. Diagnose the actual publication/permission state instead of treating every subset as an MCP session defect.
+
+Primary references, checked 2026-09-22:
+
+- <https://developers.openai.com/plugins/deploy/connect-chatgpt#refresh-metadata>
+- <https://developers.openai.com/plugins/deploy/app-review#how-published-mcp-metadata-versions-work>
+
+These documented possibilities do not prove which state applies to a specific connection. A full namespace disappearance, a single platform-denied tool request, stale protocol session rejection, and an older published catalog are separate observations; do not collapse them into one root cause.
+
+### Bounded investigation and recovery
+
+Record UTC checkpoints with a diagnostic run identifier, the observed inventory source/completeness, name-set hash, live instance/start identity, Full-mode state, session/reclaim counters, and independent tunnel readiness plus control-plane polling freshness. State which operation just completed and which is next. Preserve last-good/first-bad evidence; if the first observation is already partial, there is no demonstrated full-to-partial transition in that run.
+
+A direct fresh loopback MCP client is a useful same-backend control but is **not** a fresh ChatGPT context and cannot verify the platform's catalog refresh behavior. Terminate only the diagnostic MCP session after use. Do not expose its session identifier, credentials, prompts, provider output, or unrelated host data in evidence.
+
+The isolated HTTP regression suite covers low-pressure parallel clients, soft-target/high-watermark pressure reclamation, normal expiry, fresh initialization and stable complete manifests. A confirmed append is followed by a rejected stale-session append; the file remains unchanged through reinitialization. This proves the tested backend does not dispatch that rejected operation or replay it on rebind. It does not prove that an unobservable external client will never independently retry a mutation.
+
+On an uncertain mutating result, reconcile the existing managed job/operation and postcondition before proceeding. Never change session limits, restart the runtime/tunnel, refresh permissions, or replay work merely because a catalog is partial. Use only explicitly authorized metadata maintenance, and verify it with a new client context without claiming that this repairs an unknown upstream root cause.

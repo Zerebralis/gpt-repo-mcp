@@ -6,7 +6,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { runProcessWithTail } from "../services/process-exec.js";
 import { nonDestructiveMutationAnnotations, readOnlyAnnotations, safeMutationAnnotations, writeAnnotations } from "../tools/annotations.js";
 import type { HostBreakglassContext } from "./context.js";
-import { buildHostConnectionSnapshot, type ConnectorIncidentEvidence } from "./connection-state.js";
+import { buildHostConnectionSnapshot, createToolNameManifest, type ConnectorIncidentEvidence } from "./connection-state.js";
 import { hostApplyChanges } from "./change-pack.js";
 import { hostFileHash, hostHttpProbe, hostReadMany } from "./diagnostics.js";
 import { hostHttpRequest } from "./http-request.js";
@@ -33,9 +33,32 @@ const connectorIncident = z.object({
   current_handshake: z.enum(["ok", "session_not_found", "transport_error", "not_attempted"]),
   fresh_registry: z.enum(["available", "missing_after_rediscovery", "unknown"]),
   fresh_handshake: z.enum(["ok", "session_not_found", "transport_error", "not_attempted"]),
-  independent_backend_health: z.enum(["healthy", "unhealthy", "unknown"])
+  independent_backend_health: z.enum(["healthy", "unhealthy", "unknown"]),
+  current_tool_snapshot: z.object({
+    backend_instance_id: z.string().uuid(),
+    inventory_complete: z.boolean(),
+    tool_count: z.number().int().min(0).max(256),
+    tool_names_sha256: z.string().regex(/^[a-f0-9]{64}$/)
+  }).strict().optional()
 }).strict();
-export const HOST_BREAKGLASS_TOOL_COUNT = 42;
+// Contract test compares this manifest with actual MCP tools/list registrations.
+// This is intentionally a name-set identity, not a schema/version attestation.
+export const HOST_BREAKGLASS_TOOL_MANIFEST = createToolNameManifest([
+  "host_apply_changes", "host_computer_use_call", "host_computer_use_catalog",
+  "host_connection_snapshot", "host_diagnostics_batch", "host_edit_file",
+  "host_eventlog_query", "host_file_hash", "host_git", "host_http_probe",
+  "host_http_request", "host_list_directory", "host_list_roots",
+  "host_network_listeners", "host_port_owner", "host_process_input",
+  "host_process_kill", "host_process_list", "host_process_output",
+  "host_process_start", "host_read_file", "host_read_many", "host_registry_read",
+  "host_registry_write", "host_review_runtime", "host_search", "host_service_list",
+  "host_service_start", "host_service_stop", "host_shell", "host_stat",
+  "host_system_info", "host_system_process_detail", "host_system_process_kill",
+  "host_system_process_tree", "host_system_processes", "host_task_get",
+  "host_task_list", "host_task_start", "host_task_stop", "host_window_observe",
+  "host_write_file"
+]);
+export const HOST_BREAKGLASS_TOOL_COUNT = HOST_BREAKGLASS_TOOL_MANIFEST.tool_count;
 
 async function assertExistingWorkingDirectory(path: string): Promise<void> {
   let info;
@@ -67,6 +90,7 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
       instance_id: context.connection.instance_id,
       started_at: context.connection.started_at,
       tool_count: HOST_BREAKGLASS_TOOL_COUNT,
+      tool_manifest: HOST_BREAKGLASS_TOOL_MANIFEST,
       mcp_sessions: context.connection.session_snapshot?.() ?? null,
       chat_binding: { observable: false, state: "not_observable_from_backend" }
     }
@@ -82,6 +106,7 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
     processes: context.processes,
     connection: context.connection,
     tool_count: HOST_BREAKGLASS_TOOL_COUNT,
+      tool_manifest: HOST_BREAKGLASS_TOOL_MANIFEST,
     incident: args.incident as ConnectorIncidentEvidence | undefined
   })));
 
