@@ -14,8 +14,8 @@ export function fingerprintHostConfiguration({ envPath, envRaw, configPath, conf
 }
 
 export function expectedHostPolicy(config) {
-  const mode = config?.mode ?? "safe";
-  const fullHostAccess = config?.full_host_access ?? false;
+  const mode = config?.mode ?? "full";
+  const fullHostAccess = config?.full_host_access ?? (mode === "full");
   if (mode !== "safe" && mode !== "full") {
     throw new Error("Invalid Host Breakglass mode in config");
   }

@@ -1,6 +1,6 @@
 # Host Breakglass Architecture / Decision Log
 
-Status: 2026-09-21
+Status: 2026-09-22
 
 This file records durable architectural decisions for Host Breakglass. Operational incidents and recovery procedures remain in `HOST_BREAKGLASS_RELIABILITY.md`; implemented tool details remain in `HOST_BREAKGLASS_TOOL_HARVEST.md`.
 
@@ -14,7 +14,7 @@ Host Breakglass is deliberately:
 - locally understandable;
 - recovery-oriented;
 - auditable;
-- built around safe defaults.
+- built around explicit, auditable authority and structured guards.
 
 It is not an agent platform, memory system, project manager, general automation framework, second AWA, second CoS, or second GPT Repo MCP. Other systems may use Breakglass, but Breakglass must not depend on them for its own ability to recover the host.
 
@@ -52,18 +52,16 @@ Durable rules:
 This capability exists specifically to replace a recurring brittle
 shell/process composition with a smaller auditable contract.
 
-## Safe defaults remain standard
+## Full operator posture is standard
 
-The normal production posture remains:
+For the Zerebralis production installation, the normal operating posture is:
 
-- `mode=safe`;
-- `full_host_access=false`;
-- approved roots;
-- allowlists;
-- hash/stale-state guards;
-- process-identity guards where possible.
+- `mode=full`;
+- `full_host_access=true`;
+- guarded operations continue to require the exact `HOST_BREAKGLASS_FULL` approval where the tool contract requires it;
+- structured roots, allowlists, hash/stale-state guards, and process-identity guards remain preferred where they apply.
 
-Broader authority must be explicit and intentional.
+Agents must not automatically downgrade Breakglass to Safe after completing work. A transition to Safe mode is allowed only when Markus explicitly requests it. Safe mode remains implemented for explicit containment/testing and historical acceptance coverage, but it is not the normal production posture.
 
 ## Reliability problems are fixed at the failure mechanism
 

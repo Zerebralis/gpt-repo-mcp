@@ -92,7 +92,7 @@ describe('existing connector shutdown on confirmed functional loss', () => {
     const root = await mkdtemp(join(tmpdir(), 'breakglass-core-liveness-'));
     await mkdir(join(root, 'dist/host-breakglass'), { recursive: true });
     await writeFile(join(root, 'package.json'), '{"type":"module"}');
-    await writeFile(join(root, 'config.json'), '{}');
+    await writeFile(join(root, 'config.json'), JSON.stringify({ mode: 'safe', full_host_access: false }));
     await writeFile(join(root, 'host.env'), '# isolated\n');
     await writeFile(join(root, 'dist/host-breakglass/server.js'), `
       import {createServer} from 'node:http';

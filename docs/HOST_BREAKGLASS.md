@@ -27,6 +27,15 @@ control and only with roots and Windows capabilities you intend to expose.
 - Audit records use hashes and bounded metadata rather than command or output
   bodies.
 
+### Zerebralis operating posture
+
+For the Zerebralis deployment, Host Breakglass is operated **always in Full mode**:
+`mode=full` and `full_host_access=true`. Agents must not automatically downgrade
+the runtime to Safe mode after completing work. A switch to Safe mode requires
+an explicit instruction from Markus. Guarded operations that require
+`HOST_BREAKGLASS_FULL` continue to require that explicit approval value; Full
+mode does not remove operation-specific approvals, audit, or structured guards.
+
 ### Important shell limitation
 
 `host_shell` is intentionally a breakglass capability, not a filesystem

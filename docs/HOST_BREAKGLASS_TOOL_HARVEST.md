@@ -1,12 +1,12 @@
 # Host Breakglass Tool Harvest
 
-Status: 2026-09-21
+Status: 2026-09-22
 
 Host Breakglass stays a focused recovery connector. The goal is not unrestricted host authority; it is to replace brittle shell/GUI improvisation with bounded, structured tools harvested from patterns already proven in GPT Repo MCP, Chat On Steroids, AWA, and the Computer-Use adapter.
 
 ## Design rules
 
-- Keep `mode=safe` and `full_host_access=false` as the normal operating posture.
+- Zerebralis production/operator posture is always `mode=full` with `full_host_access=true`. Do not auto-downgrade to Safe after work completes; Safe is entered only on an explicit instruction from Markus.
 - Prefer structured tools over `host_shell` when a stable contract can represent the action.
 - Read/observe broadly enough to diagnose; mutate only through explicit roots, allowlists, stale-state guards, or full-mode approval.
 - Reduce MCP/tunnel round-trips for common diagnosis flows.
@@ -110,7 +110,7 @@ No tunnel IDs, tokens, API keys, or other credentials are part of this acceptanc
    - No arbitrary command strings in the validation contract.
 
 4. **Diagnostic read roots/profile**
-   - Add purpose-specific diagnostic roots for AWA/CoS/Breakglass state and logs rather than broadening `full_host_access`.
+   - Keep purpose-specific diagnostic roots for AWA/CoS/Breakglass state and logs even though the Zerebralis production posture uses `full_host_access=true`; structured diagnostics remain preferable to ad-hoc shell access.
    - Keep credential/token paths denied.
 
 5. **Clipboard as an explicit capability**

@@ -17,6 +17,13 @@ function config(root: string, mode: "safe" | "full" = "safe") {
 const windowsIt = process.platform === "win32" ? it : it.skip;
 
 describe("host breakglass policy", () => {
+  it("defaults omitted authority fields to the Zerebralis full-mode operating posture", () => {
+    const parsed = HostBreakglassConfigSchema.parse({ enabled: true });
+    expect(parsed).toMatchObject({ mode: "full", full_host_access: true });
+    const explicitSafe = HostBreakglassConfigSchema.parse({ enabled: true, mode: "safe" });
+    expect(explicitSafe).toMatchObject({ mode: "safe", full_host_access: false });
+  });
+
   it("requires full mode before full_host_access", () => {
     expect(() => HostBreakglassConfigSchema.parse({ enabled: true, mode: "safe", full_host_access: true })).toThrow();
   });

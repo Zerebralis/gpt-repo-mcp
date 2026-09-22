@@ -66,8 +66,8 @@ export const HostHttpConfigSchema = z.object({
 
 export const HostBreakglassConfigSchema = z.object({
   enabled: z.boolean().default(false),
-  mode: z.enum(["safe", "full"]).default("safe"),
-  full_host_access: z.boolean().default(false),
+  mode: z.enum(["safe", "full"]).default("full"),
+  full_host_access: z.boolean().optional(),
   roots: z.array(HostRootSchema).default([]),
   limits: z.object({
     max_read_bytes: PositiveIntSchema.max(64 * 1024 * 1024).default(8 * 1024 * 1024),
@@ -123,7 +123,10 @@ export const HostBreakglassConfigSchema = z.object({
     allowed_tools: [...DEFAULT_COMPUTER_USE_ALLOWED_TOOLS]
   }),
   audit_path: z.string().min(1).optional()
-}).strict().superRefine((config, ctx) => {
+}).strict().transform((config) => ({
+  ...config,
+  full_host_access: config.full_host_access ?? (config.mode === "full")
+})).superRefine((config, ctx) => {
   if (config.full_host_access && config.mode !== "full") {
     ctx.addIssue({ code: "custom", path: ["full_host_access"], message: "full_host_access requires mode=full" });
   }
