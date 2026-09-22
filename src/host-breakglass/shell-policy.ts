@@ -428,8 +428,10 @@ function findDiskBootCommand(command: string, baseOffset: number, depth = 0): Sa
       };
     }
 
-    const normalized = normalizeCommandToken(token.value);
-    const directDiskBoot = matchDiskBootToken(token.value);
+    const normalized = depth > 0 ? normalizeCmdLeadingToken(token.value) : normalizeCommandToken(token.value);
+    const directDiskBoot = DISK_BOOT_TOOLS.has(normalized)
+      ? { label: safeTokenLabel(token.value) }
+      : matchDiskBootToken(token.value);
     if (directDiskBoot || dynamicCommandCouldResolveToDiskBoot(token.value)) {
       return {
         label: "disk/boot tooling",
@@ -470,7 +472,7 @@ function findShellCommandIndirection(command: string, baseOffset: number, depth 
         }
       };
     }
-    const normalized = normalizeCommandToken(token.value);
+    const normalized = depth > 0 ? normalizeCmdLeadingToken(token.value) : normalizeCommandToken(token.value);
     if (SHELL_COMMAND_INDIRECTORS.has(normalized) || isScriptExecutionToken(token.value)) {
       return {
         label: "command indirection",
@@ -686,7 +688,7 @@ function normalizeCommandToken(token: string): string {
 }
 
 function normalizeCmdLeadingToken(token: string): string {
-  return normalizeCommandToken(token.replace(/^[(@]+/, ""));
+  return normalizeCommandToken(token.replace(/^[(@]+/, "").replace(/[,=]+$/, ""));
 }
 
 function dynamicCommandCouldResolveToDiskBoot(token: string): boolean {

@@ -93,6 +93,8 @@ describe("host breakglass policy", () => {
       'cmd.exe /c format/?',
       'cmd.exe /c format,C:',
       'cmd.exe /c diskpart=',
+      'cmd.exe /c "@diskpart"',
+      'cmd.exe /c "cmd= /c diskpart"',
       'cmd.exe /c,format C:',
       'cmd.exe /c=diskpart',
       'cmd.exe /c "format;C:" foo',
@@ -149,6 +151,7 @@ describe("host breakglass policy", () => {
       'cmd.exe /c @call diskpart',
       'cmd.exe /c (call diskpart)',
       'cmd.exe /c @start diskpart',
+      'cmd.exe /c "powershell, -c diskpart"',
       '& ("disk" + "part")',
       '. ($dynamicCommand)'
     ];
