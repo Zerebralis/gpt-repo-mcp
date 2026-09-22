@@ -3,6 +3,7 @@ import { HostAuditLog } from "./audit.js";
 import { HostPathPolicy } from "./path-policy.js";
 import { HostProcessManager } from "./process-manager.js";
 import { ComputerUseAdapter } from "./computer-use-adapter.js";
+import { createHostConnectionState, type HostConnectionState } from "./connection-state.js";
 
 export type HostBreakglassContext = {
   config: HostBreakglassConfig;
@@ -10,6 +11,7 @@ export type HostBreakglassContext = {
   audit: HostAuditLog;
   processes: HostProcessManager;
   computerUse: ComputerUseAdapter;
+  connection: HostConnectionState;
 };
 
 export function createHostBreakglassContext(config: HostBreakglassConfig): HostBreakglassContext {
@@ -18,6 +20,7 @@ export function createHostBreakglassContext(config: HostBreakglassConfig): HostB
     paths: new HostPathPolicy(config),
     audit: new HostAuditLog(config.audit_path),
     processes: new HostProcessManager(config.limits.max_processes, config.limits.max_output_bytes),
-    computerUse: new ComputerUseAdapter(config.computer_use)
+    computerUse: new ComputerUseAdapter(config.computer_use),
+    connection: createHostConnectionState()
   };
 }

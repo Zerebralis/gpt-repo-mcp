@@ -87,9 +87,9 @@ try {
   ownedPids.push(connector.server.pid);
   await until(() => connector.tunnel.state().ready, 45000);
   const healthResponse = await fetch(`http://127.0.0.1:${corePort}/health`); report.health_http = healthResponse.status; report.health = await healthResponse.json();
-  assert(healthResponse.status === 200 && report.health.tool_count === 41, 'Core health/tool contract');
+  assert(healthResponse.status === 200 && report.health.tool_count === 42, 'Core health/tool contract');
   await rpc('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'isolated-release-smoke', version: '1' } });
-  const tools = await rpc('tools/list'); assert(tools.tools.length === 41, 'MCP tool count');
+  const tools = await rpc('tools/list'); assert(tools.tools.length === 42, 'MCP tool count');
   report.mcp_tool_count = tools.tools.length;
   const call = await rpc('tools/call', { name: 'host_computer_use_call', arguments: { tool: 'get_display_size', arguments: {} } });
   assert(!call.isError, 'Real GUI observation failed'); report.gui_observation = call;

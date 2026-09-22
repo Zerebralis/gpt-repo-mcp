@@ -56,10 +56,13 @@ general-purpose runtime.
 
 ## Tool Surface
 
-The host server currently exposes 41 tools:
+The host server currently exposes 42 tools:
 
 - roots and filesystem: list roots, stat, read, write, exact edit, directory
   listing, and bounded search;
+- connection observability: `host_connection_snapshot` returns stable backend-instance identity,
+  aggregate MCP session telemetry, bounded managed-job identities, and optional fail-safe
+  incident classification without claiming visibility into ChatGPT session tool registration;
 - execution: bounded shell plus managed process start/output/list/kill;
 - review interop: `host_review_runtime` exposes only the hash-pinned canonical Review Runtime actions `build_packet`, `review`, and `status`; the deployment receipt itself is SHA-256 pinned in reviewed Breakglass source and every installed runtime file is re-hashed before execution;
 - Git: status, diff, log, branch, add, commit, fetch, fast-forward pull, push,
@@ -137,7 +140,7 @@ host inputs; configure only references and host policy. See
 
 ## Reliability Runbook
 
-Known transport incidents, diagnostic signatures, and durable fixes are documented in [HOST_BREAKGLASS_RELIABILITY.md](HOST_BREAKGLASS_RELIABILITY.md). Check that runbook first when failures surface as 502, gateway 404, or `tunnel_client_not_seen`.
+Known transport incidents, diagnostic signatures, durable fixes, and BG-R1d session-local connector-binding recovery are documented in [HOST_BREAKGLASS_RELIABILITY.md](HOST_BREAKGLASS_RELIABILITY.md). Check that runbook first when failures surface as a missing tool namespace, 502, gateway 404, or `tunnel_client_not_seen`.
 
 Durable architectural choices and deliberately rejected/default-excluded approaches are recorded in [HOST_BREAKGLASS_DECISIONS.md](HOST_BREAKGLASS_DECISIONS.md). Use that log when deciding whether a proposed recovery feature belongs in the small independent Breakglass layer at all.
 
@@ -145,7 +148,7 @@ Durable architectural choices and deliberately rejected/default-excluded approac
 
 The Streamable HTTP server keeps a strict hard cap of 100 concurrent MCP sessions with a 10-minute normal idle TTL. Secure Tunnel churn can create fresh MCP sessions faster than clients delete old ones, so pressure handling uses a separate 60-second pressure idle TTL plus a soft headroom target. `GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET` defaults to 80% of `GPT_HOST_BREAKGLASS_MAX_SESSIONS` (80 with the default cap). When a new admission would exceed that soft target, only pressure-old, idle, non-in-flight sessions are reclaimed toward enough headroom for the admission. A periodic pressure sweep also trims eligible old idle sessions toward the soft target. Fresh sessions and in-flight sessions are never closed merely to satisfy the soft target; if they occupy the full hard cap, admission is rejected instead.
 
-The hard cap, normal idle TTL, pressure idle TTL, and soft target can be configured with `GPT_HOST_BREAKGLASS_MAX_SESSIONS`, `GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS`, `GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS`, and `GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET`. `/health` exposes aggregate session state plus cumulative process-lifetime counters for committed sessions, normal expirations, pressure reclaims, and rejected admissions. It never returns session IDs.
+The hard cap, normal idle TTL, pressure idle TTL, and soft target can be configured with `GPT_HOST_BREAKGLASS_MAX_SESSIONS`, `GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS`, `GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS`, and `GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET`. `/health` exposes a stable process-lifetime `instance_id`/`started_at` pair plus aggregate session state and cumulative counters for committed sessions, normal expirations, pressure reclaims, and rejected admissions. It never returns MCP session IDs. `host_connection_snapshot` reuses that backend identity and additionally exposes bounded managed-job recovery evidence; its `chat_binding.observable=false` marker is deliberate because the server cannot inspect ChatGPT's per-conversation tool registry.
 
 ## GUI / Computer-Use Adapter
 

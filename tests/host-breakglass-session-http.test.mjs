@@ -173,6 +173,28 @@ describe("Host Breakglass Streamable HTTP session errors", () => {
     expect(health.mcp_sessions.cumulative.unknown_session_misses).toBe(3);
   });
 
+  test("health exposes stable backend instance identity independently of MCP session churn", async () => {
+    const { base } = await fixture();
+
+    const before = await (await fetch(base + "/health")).json();
+    expect(before).toMatchObject({
+      ok: true,
+      name: "gpt-repo-host-breakglass",
+      tool_count: 42
+    });
+    expect(before.instance_id).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(typeof before.started_at).toBe("string");
+    expect(before.mcp_sessions.active).toBe(0);
+
+    await initializeSession(base, 41);
+    const after = await (await fetch(base + "/health")).json();
+
+    expect(after.instance_id).toBe(before.instance_id);
+    expect(after.started_at).toBe(before.started_at);
+    expect(after.mcp_sessions.active).toBe(1);
+    expect(after.mcp_sessions.cumulative.committed).toBe(1);
+  });
+
   test("cold reconnect burst uses emergency idle reclaim instead of hard-cap admission failure", async () => {
     const { base } = await fixture({
       maxSessions: 10,

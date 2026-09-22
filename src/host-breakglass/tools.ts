@@ -6,6 +6,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { runProcessWithTail } from "../services/process-exec.js";
 import { nonDestructiveMutationAnnotations, readOnlyAnnotations, safeMutationAnnotations, writeAnnotations } from "../tools/annotations.js";
 import type { HostBreakglassContext } from "./context.js";
+import { buildHostConnectionSnapshot, type ConnectorIncidentEvidence } from "./connection-state.js";
 import { hostApplyChanges } from "./change-pack.js";
 import { hostFileHash, hostHttpProbe, hostReadMany } from "./diagnostics.js";
 import { hostHttpRequest } from "./http-request.js";
@@ -26,7 +27,15 @@ const changePackItem = z.discriminatedUnion("type", [
   z.object({ type: z.literal("write"), path: P, content: z.string(), create_directories: z.boolean().default(false), expected_old_sha256: sha256Value.optional(), expected_missing: z.boolean().default(false) }).strict(),
   z.object({ type: z.literal("replace"), path: P, find: z.string().min(1), replace: z.string(), replace_all: z.boolean().default(false), expected_old_sha256: sha256Value.optional() }).strict()
 ]);
-export const HOST_BREAKGLASS_TOOL_COUNT = 41;
+const connectorIncident = z.object({
+  previous_success_in_current_context: z.boolean(),
+  current_registry: z.enum(["available", "missing_after_rediscovery", "unknown"]),
+  current_handshake: z.enum(["ok", "session_not_found", "transport_error", "not_attempted"]),
+  fresh_registry: z.enum(["available", "missing_after_rediscovery", "unknown"]),
+  fresh_handshake: z.enum(["ok", "session_not_found", "transport_error", "not_attempted"]),
+  independent_backend_health: z.enum(["healthy", "unhealthy", "unknown"])
+}).strict();
+export const HOST_BREAKGLASS_TOOL_COUNT = 42;
 
 async function assertExistingWorkingDirectory(path: string): Promise<void> {
   let info;
@@ -51,6 +60,19 @@ export function buildHostShellInvocation(command: string): { executable: string;
 
 export function registerHostBreakglassTools(server: McpServer, context: HostBreakglassContext): void {
   server.registerTool("host_list_roots", { title: "List host roots", description: "Canonical read-only attachment handshake. List roots and capabilities approved for breakglass use; a successful call proves Host Breakglass is reachable from the current chat/tool context.", inputSchema: empty, annotations: readOnlyAnnotations }, async () => executeTool(context, "host_list_roots", async () => ({ mode: context.config.mode, full_host_access: context.config.full_host_access, roots: context.config.roots })));
+
+  server.registerTool("host_connection_snapshot", {
+    title: "Connection snapshot",
+    description: "Read a bounded backend-only Host Breakglass connection snapshot. Includes stable server-instance identity, MCP session counters and managed-job identities. It cannot observe whether a ChatGPT session still has this connector registered. Optionally classify supplied current/fresh-context incident observations without authorizing an automatic restart.",
+    inputSchema: { incident: connectorIncident.optional() },
+    annotations: readOnlyAnnotations
+  }, async (args) => executeTool(context, "host_connection_snapshot", async () => buildHostConnectionSnapshot({
+    config: context.config,
+    processes: context.processes,
+    connection: context.connection,
+    tool_count: HOST_BREAKGLASS_TOOL_COUNT,
+    incident: args.incident as ConnectorIncidentEvidence | undefined
+  })));
 
   server.registerTool("host_stat", { title: "Host path status", description: "Read metadata for an approved absolute host path.", inputSchema: { path: P }, annotations: readOnlyAnnotations }, async (args) => executeTool(context, "host_stat", () => hostStat(context, args.path)));
 

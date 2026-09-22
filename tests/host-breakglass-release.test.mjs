@@ -94,7 +94,7 @@ describe('self-contained Host Breakglass release packaging', () => {
     let stderr = ''; core.stderr.on('data', b => stderr += b); core.stdout.resume();
     let health;
     for (let i = 0; i < 100; i++) { if (core.exitCode !== null) throw Error(stderr); try { health = await (await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(200) })).json(); break; } catch { await sleep(50); } }
-    expect(health).toMatchObject({ ok: true, mode: 'safe', tool_count: 41 });
+    expect(health).toMatchObject({ ok: true, mode: 'safe', tool_count: 42 });
     // Execute the actual bundled watchdog under both module guards, outside the
     // checkout. Repeated functional probes must share one session and remove it.
     const probeScript = `
