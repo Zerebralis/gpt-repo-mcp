@@ -1,6 +1,6 @@
 /* global process, console, setTimeout */
 import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { isAbsolute, join, resolve } from "node:path";
 import { computerUseLaunchSpec, createGuiRuntime } from "./host-breakglass-gui-runtime.mjs";
 import { expectedHostPolicy, fingerprintHostConfiguration, waitForValidatedConfigurationChange } from "./host-breakglass-config-watch.mjs";
@@ -67,6 +67,7 @@ while (!stopping) {
     const configWatch = waitForValidatedConfigurationChange({
       expectedFingerprint: preflight.fingerprint,
       readPreflight: preflightConfig,
+      validateCandidate: validateCoreConfig,
       signal: watchAbort.signal,
       onBlocked: async (reason) => {
         log(`config reload blocked: ${reason}`);
@@ -174,6 +175,7 @@ async function preflightConfig() {
     env,
     guiSpec,
     expectedPolicy,
+    configPath,
     fingerprint: fingerprintHostConfiguration({
       envPath,
       envRaw: raw,
@@ -181,6 +183,40 @@ async function preflightConfig() {
       configRaw
     })
   };
+}
+
+async function validateCoreConfig(preflight) {
+  const validatorPath = join(repoRoot, "dist", "host-breakglass", "server.js");
+  return await new Promise((resolveValidation) => {
+    execFile(process.execPath, [validatorPath, "--validate-config"], {
+      cwd: repoRoot,
+      env: {
+        ...preflight.env,
+        GPT_HOST_BREAKGLASS_CONFIG: preflight.configPath,
+        GPT_HOST_BREAKGLASS_HOST: "127.0.0.1"
+      },
+      timeout: 10_000,
+      maxBuffer: 64 * 1024,
+      windowsHide: true
+    }, (error, stdout) => {
+      if (error) {
+        resolveValidation({ ok: false, reason: "host-breakglass config schema invalid" });
+        return;
+      }
+      try {
+        const result = JSON.parse(stdout.trim());
+        if (result?.ok !== true ||
+            result.mode !== preflight.expectedPolicy.mode ||
+            result.full_host_access !== preflight.expectedPolicy.full_host_access) {
+          resolveValidation({ ok: false, reason: "host-breakglass config validation mismatch" });
+          return;
+        }
+        resolveValidation({ ok: true, preflight });
+      } catch {
+        resolveValidation({ ok: false, reason: "host-breakglass config validation response invalid" });
+      }
+    });
+  });
 }
 
 function startChild(label, script, env) {
