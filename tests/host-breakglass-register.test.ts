@@ -54,6 +54,18 @@ describe("Host Breakglass attachment/discovery guidance", () => {
 
     expect(roots?.description).toContain("Canonical read-only attachment handshake");
     expect(roots?.description).toContain("successful call proves Host Breakglass is reachable");
+    expect(roots?.description).toContain("stale partial chat registry");
+    const rootsResponse = await client.callTool({ name: "host_list_roots", arguments: {} });
+    const rootsContent = (rootsResponse as { content?: Array<{ type?: string; text?: string }> }).content ?? [];
+    const rootsText = rootsContent.find((item) => item.type === "text")?.text;
+    const rootsParsed = rootsText ? JSON.parse(rootsText) : undefined;
+    expect(rootsParsed?.ok).toBe(true);
+    expect(rootsParsed?.result?.backend_attachment).toMatchObject({
+      tool_count: 42,
+      chat_binding: { observable: false, state: "not_observable_from_backend" }
+    });
+    expect(typeof rootsParsed?.result?.backend_attachment?.instance_id).toBe("string");
+    expect(typeof rootsParsed?.result?.backend_attachment?.started_at).toBe("string");
     expect(snapshotTool?.description).toContain("backend-only");
     expect(snapshotTool?.description).toContain("cannot observe");
     expect(listed.tools.some((tool) => tool.name === "host_system_info")).toBe(true);

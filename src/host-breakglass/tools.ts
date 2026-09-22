@@ -59,7 +59,18 @@ export function buildHostShellInvocation(command: string): { executable: string;
 }
 
 export function registerHostBreakglassTools(server: McpServer, context: HostBreakglassContext): void {
-  server.registerTool("host_list_roots", { title: "List host roots", description: "Canonical read-only attachment handshake. List roots and capabilities approved for breakglass use; a successful call proves Host Breakglass is reachable from the current chat/tool context.", inputSchema: empty, annotations: readOnlyAnnotations }, async () => executeTool(context, "host_list_roots", async () => ({ mode: context.config.mode, full_host_access: context.config.full_host_access, roots: context.config.roots })));
+  server.registerTool("host_list_roots", { title: "List host roots", description: "Canonical read-only attachment handshake. List roots and capabilities approved for breakglass use; a successful call proves Host Breakglass is reachable from the current chat/tool context. The response also carries current backend instance/tool-count evidence so a stale partial chat registry can be detected without depending on a newer diagnostic tool name.", inputSchema: empty, annotations: readOnlyAnnotations }, async () => executeTool(context, "host_list_roots", async () => ({
+    mode: context.config.mode,
+    full_host_access: context.config.full_host_access,
+    roots: context.config.roots,
+    backend_attachment: {
+      instance_id: context.connection.instance_id,
+      started_at: context.connection.started_at,
+      tool_count: HOST_BREAKGLASS_TOOL_COUNT,
+      mcp_sessions: context.connection.session_snapshot?.() ?? null,
+      chat_binding: { observable: false, state: "not_observable_from_backend" }
+    }
+  })));
 
   server.registerTool("host_connection_snapshot", {
     title: "Connection snapshot",

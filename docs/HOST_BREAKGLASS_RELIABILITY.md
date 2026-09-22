@@ -174,6 +174,8 @@ Two real incidents established the failure shape:
 
 During BG-R1d implementation on 2026-09-22 the class reproduced again with a different connector: a GitHub connector namespace that had just been used successfully disappeared from the same session registry while Host Breakglass remained callable. A contemporaneous Breakglass `/health` snapshot stayed HTTP 200 on the production release, exposed 41 pre-BG-R1d tools, and showed no retired-session reuse or unknown-session miss explaining the registry disappearance. This cross-connector observation strengthens the classification boundary but still does **not** prove a specific ChatGPT platform root cause.
 
+The same live registry snapshot also exposed only **39** Host Breakglass tool names while that exact backend reported **41**. The missing names were newer tools (`host_http_request` and `host_review_runtime`), while older tools such as `host_list_roots`, `host_shell` and `host_git` remained visible and callable. This is direct evidence that the affected chat can hold a **stale/partial tool registry view** even while calls to older names still reach the current healthy backend. BG-R1d therefore carries current backend instance/tool-count evidence on the long-lived `host_list_roots` handshake itself; recovery must not depend exclusively on discovering the newer `host_connection_snapshot` tool.
+
 ### Backend-only snapshot
 
 `host_connection_snapshot` provides bounded evidence that survives ordinary MCP session churn:
