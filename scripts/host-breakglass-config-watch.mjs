@@ -31,33 +31,60 @@ export function expectedHostPolicy(config) {
 export async function waitForValidatedConfigurationChange({
   expectedFingerprint,
   readPreflight,
+  validateCandidate = async (candidate) => ({ ok: true, preflight: candidate }),
   signal,
   pollMs = 1000,
+  settleMs = 250,
   onBlocked = async () => {},
   onRecovered = async () => {}
 }) {
   let blockedReason;
+
+  async function block(reason) {
+    if (reason !== blockedReason) {
+      blockedReason = reason;
+      await onBlocked(reason);
+    }
+  }
+  async function recover() {
+    if (blockedReason !== undefined) {
+      blockedReason = undefined;
+      await onRecovered();
+    }
+  }
+
   while (!signal?.aborted) {
     await delay(pollMs, signal);
     if (signal?.aborted) break;
 
     const next = await readPreflight();
     if (!next.ok) {
-      if (next.reason !== blockedReason) {
-        blockedReason = next.reason;
-        await onBlocked(next.reason);
-      }
+      await block(next.reason);
       continue;
     }
 
-    if (blockedReason !== undefined) {
-      blockedReason = undefined;
-      await onRecovered();
+    if (next.fingerprint === expectedFingerprint) {
+      await recover();
+      continue;
     }
 
-    if (next.fingerprint !== expectedFingerprint) {
-      return { changed: true, preflight: next };
+    await delay(settleMs, signal);
+    if (signal?.aborted) break;
+    const settled = await readPreflight();
+    if (!settled.ok) {
+      await block(settled.reason);
+      continue;
     }
+    if (settled.fingerprint !== next.fingerprint) continue;
+
+    const validated = await validateCandidate(settled);
+    if (!validated.ok) {
+      await block(validated.reason);
+      continue;
+    }
+
+    await recover();
+    return { changed: true, preflight: validated.preflight ?? settled };
   }
   return { changed: false };
 }
