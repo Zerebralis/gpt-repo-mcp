@@ -84,6 +84,18 @@ describe("BG-R1d connector incident classification", () => {
     });
   });
 
+  it("fails closed when current handshake success contradicts independent unhealthy backend evidence", () => {
+    const result = classifyConnectorIncident({
+      ...baseEvidence,
+      current_registry: "available",
+      current_handshake: "ok",
+      independent_backend_health: "unhealthy"
+    });
+    expect(result.classification).toBe("inconclusive");
+    expect(result.restart_local_runtime).toBe(false);
+    expect(result.reasons.join(" ")).toMatch(/current-context handshake/i);
+  });
+
   it("fails closed on contradictory client/backend observations", () => {
     const result = classifyConnectorIncident({
       ...baseEvidence,

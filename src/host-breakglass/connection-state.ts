@@ -63,6 +63,9 @@ export function classifyConnectorIncident(evidence: ConnectorIncidentEvidence) {
   if (evidence.fresh_registry === "missing_after_rediscovery" && evidence.fresh_handshake !== "not_attempted") {
     contradictions.push("fresh registry cannot be missing after rediscovery while a fresh-context MCP handshake result is present");
   }
+  if (evidence.current_handshake === "ok" && evidence.independent_backend_health === "unhealthy") {
+    contradictions.push("current-context handshake succeeded while backend health is marked unhealthy");
+  }
   if (evidence.fresh_handshake === "ok" && evidence.independent_backend_health === "unhealthy") {
     contradictions.push("fresh-context handshake succeeded while backend health is marked unhealthy");
   }
