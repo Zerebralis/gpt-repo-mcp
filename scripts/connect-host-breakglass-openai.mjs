@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createTunnelRuntime, createTunnelStatePublisher } from './host-breakglass-tunnel-runtime.mjs';
 import { createCoreLivenessWatchdog } from './host-breakglass-core-liveness.mjs';
+import { expectedHostPolicy } from './host-breakglass-config-watch.mjs';
 // Tests execute this same entry/lifecycle with only the tunnel OS boundary injected.
 export async function runConnector(options = {}) {
     const env = options.env ?? process.env;
@@ -55,6 +56,7 @@ export async function runConnector(options = {}) {
         const pollStartupTimeoutMs = integer(env.GPT_HOST_BREAKGLASS_TUNNEL_POLL_STARTUP_TIMEOUT_MS ?? '90000', 'poll startup timeout', 10000, 600000);
         const pollStaleMs = integer(env.GPT_HOST_BREAKGLASS_TUNNEL_POLL_STALE_MS ?? '180000', 'poll stale limit', 60000, 900000);
         await access(configPath, constants.R_OK);
+        const expectedPolicy = await expectedPolicyFromConfig(configPath);
         await access(join(repoRoot, 'dist/host-breakglass/server.js'), constants.R_OK);
         await mkdir(stateDir, { recursive: true });
         if (stopping)
@@ -70,7 +72,7 @@ export async function runConnector(options = {}) {
             void shutdown(1); });
         server.once('exit', code => { if (!stopping)
             void shutdown(code ?? 1); });
-        await waitForHost(server, port, abort.signal);
+        await waitForHost(server, port, abort.signal, expectedPolicy);
         if (stopping)
             return { shutdown };
         tunnel = createTunnelRuntime({
@@ -107,20 +109,32 @@ export async function runConnector(options = {}) {
         return { shutdown };
     }
 }
-async function waitForHost(child, port, signal) {
+async function waitForHost(child, port, signal, expectedPolicy) {
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline && !signal.aborted) {
         if (child.exitCode !== null || child.signalCode !== null)
             throw Error('Core exited before readiness');
         try {
             const r = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.any([signal, AbortSignal.timeout(500)]) });
-            if (r.ok)
-                return;
+            if (r.ok) {
+                const health = await r.json();
+                if (hostHealthMatchesExpectedPolicy(health, expectedPolicy))
+                    return;
+            }
         }
         catch { /* bounded startup */ }
         await new Promise(r => setTimeout(r, 100));
     }
     throw Error('Core readiness deadline exceeded');
+}
+export async function expectedPolicyFromConfig(configPath) {
+    const raw = JSON.parse((await readFile(configPath, 'utf8')).replace(/^\uFEFF/, ''));
+    return expectedHostPolicy(raw);
+}
+export function hostHealthMatchesExpectedPolicy(health, expectedPolicy) {
+    return health?.ok === true &&
+        health?.mode === expectedPolicy.mode &&
+        health?.full_host_access === expectedPolicy.full_host_access;
 }
 async function loadEnv(path, env) {
     const raw = await readFile(path, 'utf8');

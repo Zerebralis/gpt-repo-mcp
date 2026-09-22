@@ -10,7 +10,7 @@ import { build, version as esbuildVersion } from 'esbuild';
 
 export const RUNTIME_FILES = [
   'connect-host-breakglass-openai.mjs', 'host-breakglass-computer-use.mjs',
-  'host-breakglass-doctor.mjs', 'host-breakglass-gui-child.mjs',
+  'host-breakglass-config-watch.mjs', 'host-breakglass-doctor.mjs', 'host-breakglass-gui-child.mjs',
   'host-breakglass-supervisor.mjs', 'host-breakglass-tunnel-discovery.mjs',
   'host-breakglass-tunnel-job.cs', 'host-breakglass-tunnel-job.ps1',
   'host-breakglass-tunnel-owner.mjs', 'host-breakglass-tunnel-runtime.mjs',

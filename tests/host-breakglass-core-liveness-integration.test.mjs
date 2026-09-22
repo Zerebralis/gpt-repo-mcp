@@ -97,7 +97,7 @@ describe('existing connector shutdown on confirmed functional loss', () => {
     await writeFile(join(root, 'dist/host-breakglass/server.js'), `
       import {createServer} from 'node:http';
       createServer(async(req,res)=>{
-        if(req.url==='/health'){res.writeHead(200,{'content-type':'application/json'}).end('{"ok":true}');return}
+        if(req.url==='/health'){res.writeHead(200,{'content-type':'application/json'}).end('{"ok":true,"mode":"safe","full_host_access":false}');return}
         if(req.method==='GET'){res.writeHead(405).end();return}
         if(req.method==='DELETE'){res.writeHead(200).end();return}
         let raw='';for await(const c of req)raw+=c;const m=JSON.parse(raw);

@@ -90,11 +90,13 @@ describe('self-contained Host Breakglass release packaging', () => {
     expect(() => execFileSync(process.execPath, [...flags, '--input-type=module', '-e', `await import(${JSON.stringify(new URL('../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js', import.meta.url).href)})`], { cwd: allowed, env, windowsHide: true, stdio: 'pipe' })).toThrow(/External ESM module blocked/);
     const server = createServer(); await new Promise(r => server.listen(0, '127.0.0.1', r)); const port = server.address().port; await new Promise(r => server.close(r));
     const config = join(fixture, 'config.json'); await writeFile(config, JSON.stringify({ enabled: true, mode: 'safe', roots: [{ id: 'fixture', root: fixture }], computer_use: { enabled: true, server_url: 'http://127.0.0.1:1/mcp' }, audit_path: join(fixture, 'audit.jsonl') }));
+    const validated = JSON.parse(execFileSync(process.execPath, [...flags, 'dist/host-breakglass/server.js', '--validate-config'], { cwd: allowed, env: { ...env, GPT_HOST_BREAKGLASS_CONFIG: config, GPT_HOST_BREAKGLASS_HOST: '127.0.0.1' }, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }));
+    expect(validated).toEqual({ ok: true, mode: 'safe', full_host_access: false, computer_use: true });
     core = spawn(process.execPath, [...flags, 'dist/host-breakglass/server.js'], { cwd: allowed, env: { ...env, GPT_HOST_BREAKGLASS_CONFIG: config, GPT_HOST_BREAKGLASS_HOST: '127.0.0.1', GPT_HOST_BREAKGLASS_PORT: String(port) }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = ''; core.stderr.on('data', b => stderr += b); core.stdout.resume();
     let health;
     for (let i = 0; i < 100; i++) { if (core.exitCode !== null) throw Error(stderr); try { health = await (await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(200) })).json(); break; } catch { await sleep(50); } }
-    expect(health).toMatchObject({ ok: true, mode: 'safe', tool_count: 41 });
+    expect(health).toMatchObject({ ok: true, mode: 'safe', full_host_access: false, tool_count: 41 });
     // Execute the actual bundled watchdog under both module guards, outside the
     // checkout. Repeated functional probes must share one session and remove it.
     const probeScript = `
