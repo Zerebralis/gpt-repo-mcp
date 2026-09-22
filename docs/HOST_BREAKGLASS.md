@@ -451,7 +451,7 @@ Explicit Windows real-runtime gate:
 release to a new OS temporary directory outside the repository, uses isolated
 state/configuration/audit and free alternative loopback ports, starts the real
 Computer-Use backend, probes its MCP handshake and read-only display-size call,
-and verifies native Core health and 40 MCP tools. The real tunnel runs against
+and verifies native Core health and 41 MCP tools. The real tunnel runs against
 an isolated local control-plane stub via the connector's existing test seam;
 production credentials and the real remote control plane are not used. The
 actual supervisor entry is separately imported/started against an isolated
