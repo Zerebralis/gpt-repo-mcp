@@ -83,11 +83,16 @@ export type HostReviewRuntimeInput = {
 
 const ExactSha = z.string().regex(/^[a-fA-F0-9]{40}$/);
 const HostPath = z.string().min(2).max(4_000).refine((value) => !/[\0\r\n]/.test(value), "Path contains a forbidden control character.");
-const RepoRelativePath = z.string().min(1).max(2_000).refine((value) => {
-  if (/[\0\r\n]/.test(value) || isAbsolute(value)) return false;
+export function isSafeReviewRepoRelativePath(value: string): boolean {
+  if (/[\0\r\n:]/.test(value) || isAbsolute(value) || win32.isAbsolute(value)) return false;
   const normalized = value.replaceAll("\\", "/");
   return !normalized.split("/").includes("..");
-}, "Repository path must be relative and must not contain '..'.");
+}
+
+const RepoRelativePath = z.string().min(1).max(2_000).refine(
+  isSafeReviewRepoRelativePath,
+  "Repository path must be relative and must not contain '..', drive letters, or Git pathspec magic."
+);
 
 const BuildPacketInput = z.object({
   action: z.literal("build_packet"),
@@ -312,19 +317,20 @@ async function resolveRepo(context: HostBreakglassContext, path: string): Promis
 }
 
 export async function hostReviewRuntime(context: HostBreakglassContext, raw: HostReviewRuntimeInput) {
-  const runtime = await verifyReviewRuntimeDeployment();
+  await verifyReviewRuntimeDeployment();
 
   if (raw.action === "status") {
     const input = StatusInput.parse(raw);
-    const command = "& " + psQuote(runtime.scripts.status) + (input.deep ? " -Deep" : "");
+    const launchRuntime = await verifyReviewRuntimeDeployment();
+    const command = "& " + psQuote(launchRuntime.scripts.status) + (input.deep ? " -Deep" : "");
     const invocation = powershellInvocation(command);
     const job = context.processes.start({
       executable: invocation.executable,
       args: invocation.args,
-      cwd: join(runtime.install_root, "Reviewers"),
+      cwd: join(launchRuntime.install_root, "Reviewers"),
       timeout_ms: input.timeout_ms ?? 60_000
     });
-    return { action: input.action, runtime: runtimeIdentity(runtime), job };
+    return { action: input.action, runtime: runtimeIdentity(launchRuntime), job };
   }
 
   if (raw.action === "build_packet") {
@@ -339,14 +345,15 @@ export async function hostReviewRuntime(context: HostBreakglassContext, raw: Hos
       : undefined;
 
     const normalized = { ...input, repo_path: repoPath, instructions_file: instructionsFile, output_file: outputFile, evidence_files: evidenceFiles, prior_findings_file: priorFindingsFile };
-    const invocation = powershellInvocation(commandForBuildPacket(runtime, normalized));
+    const launchRuntime = await verifyReviewRuntimeDeployment();
+    const invocation = powershellInvocation(commandForBuildPacket(launchRuntime, normalized));
     const job = context.processes.start({
       executable: invocation.executable,
       args: invocation.args,
-      cwd: join(runtime.install_root, "Reviewers"),
+      cwd: join(launchRuntime.install_root, "Reviewers"),
       timeout_ms: input.timeout_ms ?? 300_000
     });
-    return { action: input.action, runtime: runtimeIdentity(runtime), job, output_file: outputFile };
+    return { action: input.action, runtime: runtimeIdentity(launchRuntime), job, output_file: outputFile };
   }
 
   const input = ReviewInput.parse(raw);
@@ -369,15 +376,16 @@ export async function hostReviewRuntime(context: HostBreakglassContext, raw: Hos
     receipt_file: receiptFile,
     groq_scout_output_file: groqScoutOutputFile
   };
-  const invocation = powershellInvocation(commandForReview(runtime, normalized));
+  const launchRuntime = await verifyReviewRuntimeDeployment();
+  const invocation = powershellInvocation(commandForReview(launchRuntime, normalized));
   const processTimeout = input.timeout_ms ?? Math.min(3_600_000, (input.timeout_minutes + 2) * 60_000);
   const job = context.processes.start({
     executable: invocation.executable,
     args: invocation.args,
-    cwd: join(runtime.install_root, "Reviewers"),
+    cwd: join(launchRuntime.install_root, "Reviewers"),
     timeout_ms: processTimeout
   });
-  return { action: input.action, runtime: runtimeIdentity(runtime), job, output_file: outputFile, receipt_file: receiptFile };
+  return { action: input.action, runtime: runtimeIdentity(launchRuntime), job, output_file: outputFile, receipt_file: receiptFile };
 }
 
 function runtimeIdentity(runtime: VerifiedReviewRuntime) {

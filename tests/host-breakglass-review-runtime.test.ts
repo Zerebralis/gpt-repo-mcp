@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { verifyReviewRuntimeDeployment } from "../src/host-breakglass/review-runtime.js";
+import { isSafeReviewRepoRelativePath, verifyReviewRuntimeDeployment } from "../src/host-breakglass/review-runtime.js";
 
 const roots = new Set<string>();
 
@@ -104,5 +104,19 @@ describe("Host Breakglass canonical Review Runtime trust binding", () => {
       expected_runtime_version: "2.4.0",
       expected_source_sha: fx.sourceSha
     })).rejects.toThrow(/file drift/i);
+  });
+
+  it("rejects Windows drive-relative and Git pathspec forms for repo-relative review paths", () => {
+    for (const unsafe of [
+      "C:..\\Windows\\System32\\sam",
+      "C:\\Windows\\System32\\sam",
+      "..\\outside.txt",
+      "../outside.txt",
+      ":(top,glob)**/*.ps1"
+    ]) {
+      expect(isSafeReviewRepoRelativePath(unsafe), unsafe).toBe(false);
+    }
+    expect(isSafeReviewRepoRelativePath("docs/HOST_BREAKGLASS.md")).toBe(true);
+    expect(isSafeReviewRepoRelativePath("src\\host-breakglass\\tools.ts")).toBe(true);
   });
 });
