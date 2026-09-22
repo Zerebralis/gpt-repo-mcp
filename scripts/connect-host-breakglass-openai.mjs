@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createTunnelRuntime, createTunnelStatePublisher } from './host-breakglass-tunnel-runtime.mjs';
 import { createCoreLivenessWatchdog } from './host-breakglass-core-liveness.mjs';
+import { expectedHostPolicy } from './host-breakglass-config-watch.mjs';
 // Tests execute this same entry/lifecycle with only the tunnel OS boundary injected.
 export async function runConnector(options = {}) {
     const env = options.env ?? process.env;
@@ -128,15 +129,7 @@ async function waitForHost(child, port, signal, expectedPolicy) {
 }
 export async function expectedPolicyFromConfig(configPath) {
     const raw = JSON.parse((await readFile(configPath, 'utf8')).replace(/^\uFEFF/, ''));
-    const mode = raw.mode ?? 'safe';
-    const fullHostAccess = raw.full_host_access ?? false;
-    if (mode !== 'safe' && mode !== 'full')
-        throw Error('Invalid Host Breakglass mode in config');
-    if (typeof fullHostAccess !== 'boolean')
-        throw Error('Invalid Host Breakglass full_host_access in config');
-    if (fullHostAccess && mode !== 'full')
-        throw Error('Host Breakglass full_host_access requires mode=full');
-    return { mode, full_host_access: fullHostAccess };
+    return expectedHostPolicy(raw);
 }
 export function hostHealthMatchesExpectedPolicy(health, expectedPolicy) {
     return health?.ok === true &&
