@@ -35,6 +35,25 @@ mode adds command guardrails, but an arbitrary shell can reference other host
 paths. Prefer the bounded file, Git, process, registry, and service tools when
 they can perform the task.
 
+Safe Mode also fails closed on shell-level command indirection that cannot be
+reliably classified as a direct command: nested PowerShell, `Start-Process`,
+`Invoke-Expression`, `Invoke-Command`, alias/function creation, opaque `cmd.exe`
+argument layouts, and dynamic invocation operators are rejected. Use
+`host_process_start` for an explicit child process instead of escaping through
+free-form shell. On Windows, commands that contain scriptblocks, subexpressions,
+or native process-creation indirection are additionally parsed with PowerShell's
+own AST; every nested `CommandAst` is inspected, while parser errors and dynamic
+command names fail closed. Safe Mode also rejects unknown instance/member-method
+invocation, object/provider execution indirection, direct script/batch execution,
+and native Windows launcher primitives that can execute an opaque child command;
+those require Full Mode or a structured Breakglass primitive. Known native launcher primitives are denied in Safe Mode on both the shell and
+managed-process surfaces. When an explicit managed process is itself `cmd.exe`
+or PowerShell, its structured argument list is inspected; opaque, encoded, or
+script-file interpreter entry points require Full Mode rather than being treated
+as safely parsed. Arbitrary executable programs remain arbitrary executable code:
+Safe Mode does not claim code containment or a sandbox for a deliberately hostile
+general-purpose runtime.
+
 ## Tool Surface
 
 The host server currently exposes 40 tools:
