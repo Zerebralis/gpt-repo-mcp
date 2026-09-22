@@ -180,6 +180,8 @@ describe("Host Breakglass Streamable HTTP session errors", () => {
     expect(before).toMatchObject({
       ok: true,
       name: "gpt-repo-host-breakglass",
+      mode: "safe",
+      full_host_access: false,
       tool_count: 42
     });
     expect(before.instance_id).toMatch(/^[0-9a-f-]{36}$/i);

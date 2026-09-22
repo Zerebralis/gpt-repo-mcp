@@ -59,6 +59,7 @@ app.get("/health", (_req, res) => {
     ok: true,
     name: "gpt-repo-host-breakglass",
     mode: config.mode,
+    full_host_access: config.full_host_access,
     tool_count: HOST_BREAKGLASS_TOOL_COUNT,
     computer_use: config.computer_use.enabled,
     instance_id: context.connection.instance_id,
