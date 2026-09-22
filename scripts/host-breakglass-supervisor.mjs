@@ -1,9 +1,9 @@
 /* global process, console, setTimeout */
 import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { computerUseLaunchSpec, createGuiRuntime } from "./host-breakglass-gui-runtime.mjs";
-import { fingerprintHostConfiguration, waitForValidatedConfigurationChange } from "./host-breakglass-config-watch.mjs";
+import { expectedHostPolicy, fingerprintHostConfiguration, waitForValidatedConfigurationChange } from "./host-breakglass-config-watch.mjs";
 
 const repoRoot = resolve(process.env.GPT_HOST_BREAKGLASS_REPO_ROOT ?? process.cwd());
 const stateDir = process.env.GPT_HOST_BREAKGLASS_STATE_DIR ?? join(process.env.LOCALAPPDATA ?? repoRoot, "gpt-repo-host-breakglass");
@@ -59,6 +59,7 @@ while (!stopping) {
       restart_count: restarts,
       connector_pid: connector.pid ?? null,
       computer_use_pid: gui.state().pid,
+      active_policy: preflight.expectedPolicy,
       config_reload: { status: "watching" }
     });
 
@@ -141,6 +142,23 @@ async function preflightConfig() {
   }
   catch { return { ok: false, reason: "host-breakglass config missing or invalid" }; }
 
+  let expectedPolicy;
+  try {
+    if (config.enabled !== true) throw new Error("Host Breakglass config is disabled");
+    expectedPolicy = expectedHostPolicy(config);
+    if (!Array.isArray(config.roots)) throw new Error("Host Breakglass roots must be an array");
+    if (config.roots.length === 0 && !expectedPolicy.full_host_access) {
+      throw new Error("Host Breakglass requires an approved root unless full_host_access=true");
+    }
+    for (const root of config.roots) {
+      if (!root || typeof root.root !== "string" || !isAbsolute(root.root)) {
+        throw new Error("Host Breakglass roots must use absolute paths");
+      }
+    }
+  } catch {
+    return { ok: false, reason: "host-breakglass config policy invalid" };
+  }
+
   const env = { ...process.env, ...values, GPT_HOST_BREAKGLASS_CONFIG: configPath };
   let guiSpec;
   try { guiSpec = computerUseLaunchSpec(config, env, repoRoot, stateDir); }
@@ -150,6 +168,7 @@ async function preflightConfig() {
     ok: true,
     env,
     guiSpec,
+    expectedPolicy,
     fingerprint: fingerprintHostConfiguration({
       envPath,
       envRaw: raw,
