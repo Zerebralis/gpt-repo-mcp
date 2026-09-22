@@ -157,6 +157,17 @@ export class HostProcessManager {
       .map((job) => this.view(job));
   }
 
+  summary(): { total: number; running: number; terminal: number; running_job_ids: string[] } {
+    const jobs = [...this.jobs.values()];
+    const running = jobs.filter((job) => job.status === "running");
+    return {
+      total: jobs.length,
+      running: running.length,
+      terminal: jobs.length - running.length,
+      running_job_ids: running.map((job) => job.job_id)
+    };
+  }
+
   kill(jobId: string): HostManagedProcessView {
     const job = this.require(jobId);
     if (job.status === "running") {

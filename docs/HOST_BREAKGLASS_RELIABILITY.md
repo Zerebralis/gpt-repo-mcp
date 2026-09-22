@@ -157,17 +157,90 @@ A controlled fault was injected after the Process Manager had successfully looke
 - Never re-associate a managed job from PID alone. PID values may be reused; if separate OS-process evidence is needed, use the process-detail identity guard rather than adopting a PID as a managed job.
 - Recovery contains no automatic retry loop and never automatically replays `host_process_start`. Any later replacement is a new explicit decision after terminal/loss evidence is established.
 
+## Failure mode D: session-local connector / tool-registry binding loss
+
+### External symptom
+
+A connector namespace or part of its tool surface was previously available and used successfully in one ChatGPT conversation, then disappears from the tool registry for that same conversation. Direct and generic/deferred discovery no longer expose the expected tools there.
+
+This is **not** the same as a stale MCP session and is **not** evidence that the Host Breakglass server, Secure Tunnel, or host runtime is down.
+
+### Confirmed evidence boundary — 2026-09-21/22
+
+Two real incidents established the failure shape:
+
+- a long-running chat used Host Breakglass successfully and later no longer exposed the `Host_Breakglass` namespace while fresh/parallel chats still reached the same Breakglass runtime;
+- a later GCR-7 session lost only parts of previously available connector/tool surfaces, while a fresh takeover session later continued against the healthy runtime without rebuilding it.
+
+During BG-R1d implementation on 2026-09-22 the class reproduced again with a different connector: a GitHub connector namespace that had just been used successfully disappeared from the same session registry while Host Breakglass remained callable. A contemporaneous Breakglass `/health` snapshot stayed HTTP 200 on the production release, exposed 41 pre-BG-R1d tools, and showed no retired-session reuse or unknown-session miss explaining the registry disappearance. This cross-connector observation strengthens the classification boundary but still does **not** prove a specific ChatGPT platform root cause.
+
+The same live registry snapshot also exposed only **39** Host Breakglass tool names while that exact backend reported **41**. The missing names were newer tools (`host_http_request` and `host_review_runtime`), while older tools such as `host_list_roots`, `host_shell` and `host_git` remained visible and callable. This is direct evidence that the affected chat can hold a **stale/partial tool registry view** even while calls to older names still reach the current healthy backend. BG-R1d therefore carries current backend instance/tool-count evidence on the long-lived `host_list_roots` handshake itself; recovery must not depend exclusively on discovering the newer `host_connection_snapshot` tool.
+
+### Backend-only snapshot
+
+`host_connection_snapshot` provides bounded evidence that survives ordinary MCP session churn:
+
+- stable Breakglass `instance_id` and `started_at` for the current server process;
+- mode, PID, tool count and Computer-Use enablement;
+- the same aggregate MCP session counters exposed by `/health`;
+- bounded managed-process summary plus currently running managed `job_id` values;
+- an explicit `chat_binding.observable=false` marker.
+
+The snapshot deliberately says `scope=host-breakglass-backend-only`. A healthy snapshot cannot prove that a particular ChatGPT conversation still has the connector registered. Conversely, a missing connector surface means the affected conversation cannot call the snapshot itself; obtain fresh-context/rebind evidence instead.
+
+### Deterministic classification
+
+The optional incident input on `host_connection_snapshot` implements the same fail-safe matrix as this runbook:
+
+| Evidence | Classification | Local restart |
+|---|---|---|
+| current attachment handshake succeeds | `healthy` | no |
+| connector previously worked; direct/deferred rediscovery is now missing in that chat; fresh context/rebind successfully handshakes with Breakglass | `connector_binding_lost` | **no** |
+| connector surface is present and backend returns protocol-correct `404 Session not found` | `mcp_session_stale` | no |
+| independent backend health is unhealthy and neither current nor fresh context handshakes | `backend_or_transport_unavailable` | not automatic; diagnose first |
+| missing/contradictory evidence | `inconclusive` | **no** |
+
+A missing tool surface by itself is intentionally insufficient to classify `connector_binding_lost`. The classifier also fails closed on contradictory observations. `incident_analysis.evidence_source=caller_supplied_incident_observations` makes the trust boundary explicit; `independent_backend_health` is an input observation, not something inferred from the affected chat's missing registry.
+
+### Recovery contract
+
+For `connector_binding_lost`:
+
+1. do not restart Host Breakglass, its tunnel, AWA, CoS, or the host merely because the current chat lost the namespace;
+2. do not replay a mutating request whose outcome is ambiguous;
+3. preserve any managed `job_id` already returned to the chat;
+4. use generic/deferred discovery, then the intended connector rebind or a fresh ChatGPT context as the cheapest independent recovery test;
+5. if the fresh context reaches Breakglass, continue on the same backend instance when possible and reconcile existing managed work by job ID before any replacement start;
+6. only if a fresh context also cannot reach Breakglass escalate to the independent AWA/host/tunnel diagnostic path;
+7. CoS is not an automatic recovery path.
+
+The exact platform cause remains `unknown` until independently reproduced at the ChatGPT/tool-router layer. Host Breakglass can harden observation and recovery semantics; it cannot claim to repair a client-side registry implementation it does not control.
+
+### Fault-lab acceptance
+
+BG-R1d regression coverage must keep these states distinct:
+
+- current surface missing + previous success + fresh-context handshake PASS -> `connector_binding_lost`;
+- current surface present + `Session not found` -> `mcp_session_stale`;
+- independent backend unhealthy + current/fresh transport failure -> `backend_or_transport_unavailable`;
+- current surface missing without fresh-context proof -> `inconclusive`;
+- contradictory evidence -> `inconclusive`;
+- none of these classifications may authorize an automatic local restart or duplicate `host_process_start`.
+
 ## Triage order
 
 When Host Breakglass becomes unreliable, use this order instead of immediately restarting everything:
 
-1. Check the local Host Breakglass `/health` aggregate session telemetry.
-2. If sessions are at capacity and logs contain `session capacity reached`, diagnose **Failure mode A**.
-3. Check the tunnel-client loopback `/readyz`.
-4. Check `/metrics` and inspect `commands_poll_last_successful_timestamp_seconds`.
-5. If `/readyz` is 200 but the poll timestamp is stale or absent, diagnose **Failure mode B**.
-6. Inspect `%LOCALAPPDATA%\gpt-repo-host-breakglass\supervisor.log` and `connector-state.json` for the restart sequence.
-7. Only after separating these failure modes investigate wider network/control-plane causes.
+1. First determine whether the expected `host_*` surface is still present in the affected ChatGPT context.
+2. If the surface disappeared after previous successful use, run direct plus generic/deferred discovery. Do not restart anything yet.
+3. If it remains missing, use the intended connector rebind or a fresh context. If that fresh context completes the attachment handshake, classify **Failure mode D / `connector_binding_lost`** and continue without rebuilding the local runtime.
+4. If the connector surface is present but an existing MCP session returns `404 Session not found`, classify the stale-session path under **Failure mode A** and establish a fresh MCP session; do not duplicate managed work.
+5. If current/fresh contexts still cannot reach Breakglass, inspect independent local `/health` evidence or `host_connection_snapshot` from an available context. Preserve any known managed `job_id` values.
+6. If sessions are at capacity and logs contain `session capacity reached`, diagnose **Failure mode A**.
+7. Check the tunnel-client loopback `/readyz`, then `/metrics` and `commands_poll_last_successful_timestamp_seconds`.
+8. If `/readyz` is 200 but the poll timestamp is stale or absent, diagnose **Failure mode B**.
+9. Inspect `%LOCALAPPDATA%\gpt-repo-host-breakglass\supervisor.log` and `connector-state.json` for the restart sequence.
+10. Only after the fresh-context and backend/tunnel checks fail should AWA/host diagnosis consider a local runtime restart. CoS is not part of this automatic recovery path.
 
 ## Safety / lifecycle boundaries
 

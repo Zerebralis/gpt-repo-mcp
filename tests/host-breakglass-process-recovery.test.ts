@@ -71,6 +71,12 @@ describe("managed process observation recovery", () => {
       }
     });
     expect(manager.list().filter((job) => job.job_id === started.job_id)).toHaveLength(1);
+    expect(manager.summary()).toEqual({
+      total: 1,
+      running: 1,
+      terminal: 0,
+      running_job_ids: [started.job_id]
+    });
 
     await manager.input(started.job_id, "finish\n", true);
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -91,6 +97,7 @@ describe("managed process observation recovery", () => {
         exit_code: 0
       }
     });
+    expect(manager.summary()).toEqual({ total: 1, running: 0, terminal: 1, running_job_ids: [] });
   });
 
   it("keeps an unknown job id separate and never adopts another job by PID", async () => {

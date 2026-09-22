@@ -56,10 +56,29 @@ try {
 
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
-  assert(names.length === 41, `expected 41 tools, got ${names.length}: ${names.join(", ")}`);
-  for (const required of ["host_read_file", "host_read_many", "host_file_hash", "host_write_file", "host_edit_file", "host_apply_changes", "host_shell", "host_process_start", "host_process_input", "host_review_runtime", "host_git", "host_system_info", "host_system_process_detail", "host_network_listeners", "host_port_owner", "host_task_list", "host_eventlog_query", "host_http_probe", "host_http_request", "host_diagnostics_batch", "host_window_observe", "host_computer_use_catalog", "host_computer_use_call"]) {
+  assert(names.length === 42, `expected 42 tools, got ${names.length}: ${names.join(", ")}`);
+  for (const required of ["host_connection_snapshot", "host_read_file", "host_read_many", "host_file_hash", "host_write_file", "host_edit_file", "host_apply_changes", "host_shell", "host_process_start", "host_process_input", "host_review_runtime", "host_git", "host_system_info", "host_system_process_detail", "host_network_listeners", "host_port_owner", "host_task_list", "host_eventlog_query", "host_http_probe", "host_http_request", "host_diagnostics_batch", "host_window_observe", "host_computer_use_catalog", "host_computer_use_call"]) {
     assert(names.includes(required), `missing tool ${required}`);
   }
+
+  const connection = expectOk(await call("host_connection_snapshot", {
+    incident: {
+      previous_success_in_current_context: true,
+      current_registry: "missing_after_rediscovery",
+      current_handshake: "not_attempted",
+      fresh_registry: "available",
+      fresh_handshake: "ok",
+      independent_backend_health: "healthy"
+    }
+  }));
+  assert(connection.result.schema === "zerebralis.host-breakglass.connection-snapshot.v1", "host_connection_snapshot schema mismatch");
+  assert(connection.result.scope === "host-breakglass-backend-only", "host_connection_snapshot scope mismatch");
+  assert(connection.result.chat_binding?.observable === false, "snapshot must not claim ChatGPT registry visibility");
+  assert(connection.result.incident_analysis?.classification === "connector_binding_lost", "BG-R1d classifier did not distinguish session-local binding loss");
+  assert(connection.result.incident_analysis?.restart_local_runtime === false, "binding loss must not authorize local restart");
+  assert(connection.result.incident_analysis?.evidence_source === "caller_supplied_incident_observations", "incident analysis must identify caller-supplied evidence");
+  assert(typeof connection.result.backend?.instance_id === "string" && connection.result.backend.instance_id.length > 0, "snapshot missing backend instance id");
+  assert(connection.result.mcp_sessions?.active >= 1, "snapshot missing live MCP session stats");
 
   const file = join(root, "smoke.txt");
   expectOk(await call("host_write_file", { path: file, content: "alpha", create_directories: true }));
@@ -192,7 +211,7 @@ try {
     victim = undefined;
   }
 
-  console.log("Host breakglass built MCP smoke PASS (41 tools/files/change-pack/process-input/git/windows/network/tasks/eventlog/http/registry/services/root-policy/safe-policy).\n");
+  console.log("Host breakglass built MCP smoke PASS (42 tools/files/change-pack/process-input/git/windows/network/tasks/eventlog/http/registry/services/root-policy/safe-policy).\n");
 
   async function call(name, args) {
     return client.callTool({ name, arguments: args });
@@ -244,7 +263,7 @@ async function waitForHealth(processHandle, portNumber, readOutput) {
       const response = await fetch(`http://127.0.0.1:${portNumber}/health`, { signal: AbortSignal.timeout(400) });
       if (response.ok) {
         const body = await response.json();
-        assert(body?.ok === true && body?.name === "gpt-repo-host-breakglass" && body?.tool_count === 41, `bad health: ${JSON.stringify(body)}`);
+        assert(body?.ok === true && body?.name === "gpt-repo-host-breakglass" && body?.tool_count === 42, `bad health: ${JSON.stringify(body)}`);
         return;
       }
     } catch {

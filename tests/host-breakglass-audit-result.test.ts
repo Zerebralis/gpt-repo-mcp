@@ -140,5 +140,5 @@ describe.each([false, true])("Host Breakglass operation results (audit fails=%s)
 
 it("keeps the existing tool surface", async () => {
   const { client } = await fixture(false);
-  expect((await client.listTools()).tools).toHaveLength(41);
+  expect((await client.listTools()).tools).toHaveLength(42);
 });

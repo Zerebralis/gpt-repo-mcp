@@ -31,24 +31,73 @@ async function fixture() {
 }
 
 describe("Host Breakglass attachment/discovery guidance", () => {
-  it("advertises deferred discovery before asking the operator to reattach", async () => {
+  it("advertises rediscovery, binding-loss classification and no-restart recovery", async () => {
     const { client } = await fixture();
     const instructions = client.getInstructions();
 
     expect(instructions).toContain("generic/deferred tool discovery");
     expect(instructions).toContain("host_list_roots followed by host_system_info");
+    expect(instructions).toContain("host_connection_snapshot");
+    expect(instructions).toContain("connector_binding_lost");
+    expect(instructions).toContain("fresh context/rebind");
+    expect(instructions).toContain("Do not restart the local runtime");
+    expect(instructions).toContain("Preserve existing managed job ids");
     expect(instructions).toContain("Do not infer reinstall, permission failure, or backend failure");
     expect(instructions).toContain("Do not silently substitute RDC, AWA, CoS");
   });
 
-  it("exposes the canonical read-only attachment handshake", async () => {
+  it("exposes the canonical handshake plus backend-only connection snapshot", async () => {
     const { client } = await fixture();
     const listed = await client.listTools();
     const roots = listed.tools.find((tool) => tool.name === "host_list_roots");
+    const snapshotTool = listed.tools.find((tool) => tool.name === "host_connection_snapshot");
 
     expect(roots?.description).toContain("Canonical read-only attachment handshake");
     expect(roots?.description).toContain("successful call proves Host Breakglass is reachable");
+    expect(roots?.description).toContain("stale partial chat registry");
+    const rootsResponse = await client.callTool({ name: "host_list_roots", arguments: {} });
+    const rootsContent = (rootsResponse as { content?: Array<{ type?: string; text?: string }> }).content ?? [];
+    const rootsText = rootsContent.find((item) => item.type === "text")?.text;
+    const rootsParsed = rootsText ? JSON.parse(rootsText) : undefined;
+    expect(rootsParsed?.ok).toBe(true);
+    expect(rootsParsed?.result?.backend_attachment).toMatchObject({
+      tool_count: 42,
+      chat_binding: { observable: false, state: "not_observable_from_backend" }
+    });
+    expect(typeof rootsParsed?.result?.backend_attachment?.instance_id).toBe("string");
+    expect(typeof rootsParsed?.result?.backend_attachment?.started_at).toBe("string");
+    expect(snapshotTool?.description).toContain("backend-only");
+    expect(snapshotTool?.description).toContain("cannot observe");
     expect(listed.tools.some((tool) => tool.name === "host_system_info")).toBe(true);
     expect(listed.tools.some((tool) => tool.name === "host_review_runtime")).toBe(true);
+    expect(listed.tools).toHaveLength(42);
+
+    const response = await client.callTool({
+      name: "host_connection_snapshot",
+      arguments: {
+        incident: {
+          previous_success_in_current_context: true,
+          current_registry: "missing_after_rediscovery",
+          current_handshake: "not_attempted",
+          fresh_registry: "available",
+          fresh_handshake: "ok",
+          independent_backend_health: "healthy"
+        }
+      }
+    });
+    const content = (response as { content?: Array<{ type?: string; text?: string }> }).content ?? [];
+    const text = content.find((item) => item.type === "text")?.text;
+    const parsed = text ? JSON.parse(text) : undefined;
+    expect(parsed?.ok).toBe(true);
+    expect(parsed?.result).toMatchObject({
+      schema: "zerebralis.host-breakglass.connection-snapshot.v1",
+      scope: "host-breakglass-backend-only",
+      chat_binding: { observable: false, state: "not_observable_from_backend" },
+      incident_analysis: {
+        classification: "connector_binding_lost",
+        restart_local_runtime: false,
+        evidence_source: "caller_supplied_incident_observations"
+      }
+    });
   });
 });
