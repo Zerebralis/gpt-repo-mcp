@@ -23,6 +23,7 @@ describe("Host Breakglass supervised config reconciliation", () => {
 
   it("keeps the current runtime while replacement config is invalid, then reports a validated change", async () => {
     let calls = 0;
+    let validations = 0;
     const blocked = [];
     let recovered = 0;
     const controller = new AbortController();
@@ -36,6 +37,11 @@ describe("Host Breakglass supervised config reconciliation", () => {
         if (calls === 2) return { ok: true, fingerprint: "current" };
         return { ok: true, fingerprint: "replacement", expectedPolicy: { mode: "full", full_host_access: true } };
       },
+      validateCandidate: async (candidate) => {
+        validations += 1;
+        if (validations === 1) return { ok: false, reason: "host-breakglass config schema invalid" };
+        return { ok: true, preflight: candidate };
+      },
       onBlocked: async (reason) => blocked.push(reason),
       onRecovered: async () => { recovered += 1; }
     });
@@ -47,8 +53,12 @@ describe("Host Breakglass supervised config reconciliation", () => {
         expectedPolicy: { mode: "full", full_host_access: true }
       }
     });
-    expect(blocked).toEqual(["host-breakglass config missing or invalid"]);
-    expect(recovered).toBe(1);
+    expect(blocked).toEqual([
+      "host-breakglass config missing or invalid",
+      "host-breakglass config schema invalid"
+    ]);
+    expect(validations).toBe(2);
+    expect(recovered).toBe(2);
   });
 
   it("validates the safe/full policy contract before a reload is accepted", () => {
