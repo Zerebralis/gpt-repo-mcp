@@ -148,7 +148,10 @@ Durable architectural choices and deliberately rejected/default-excluded approac
 
 The Streamable HTTP server keeps a strict hard cap of 100 concurrent MCP sessions with a 10-minute normal idle TTL. Secure Tunnel churn can create fresh MCP sessions faster than clients delete old ones, so pressure handling uses a separate 60-second pressure idle TTL plus a soft headroom target. `GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET` defaults to 80% of `GPT_HOST_BREAKGLASS_MAX_SESSIONS` (80 with the default cap). When a new admission would exceed that soft target, only pressure-old, idle, non-in-flight sessions are reclaimed toward enough headroom for the admission. A periodic pressure sweep also trims eligible old idle sessions toward the soft target. Fresh sessions and in-flight sessions are never closed merely to satisfy the soft target; if they occupy the full hard cap, admission is rejected instead.
 
-The hard cap, normal idle TTL, pressure idle TTL, and soft target can be configured with `GPT_HOST_BREAKGLASS_MAX_SESSIONS`, `GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS`, `GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS`, and `GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET`. `/health` exposes a stable process-lifetime `instance_id`/`started_at` pair plus aggregate session state and cumulative counters for committed sessions, normal expirations, pressure reclaims, and rejected admissions. It never returns MCP session IDs. `host_connection_snapshot` reuses that backend identity and additionally exposes bounded managed-job recovery evidence; its `chat_binding.observable=false` marker is deliberate because the server cannot inspect ChatGPT's per-conversation tool registry.
+
+The hard cap, normal idle TTL, pressure idle TTL, and soft target can be configured with `GPT_HOST_BREAKGLASS_MAX_SESSIONS`, `GPT_HOST_BREAKGLASS_SESSION_IDLE_TTL_MS`, `GPT_HOST_BREAKGLASS_SESSION_PRESSURE_IDLE_TTL_MS`, and `GPT_HOST_BREAKGLASS_SESSION_SOFT_TARGET`. `/health` exposes the active `mode` and `full_host_access`, a stable process-lifetime `instance_id`/`started_at` pair, aggregate session state, and cumulative counters for committed sessions, normal expirations, pressure reclaims, and rejected admissions. It never returns MCP session IDs. `host_connection_snapshot` reuses that backend identity and additionally exposes bounded managed-job recovery evidence; its `chat_binding.observable=false` marker is deliberate because the server cannot inspect ChatGPT's per-conversation tool registry.
+
+
 
 ## GUI / Computer-Use Adapter
 
@@ -258,12 +261,24 @@ The Breakglass stack must not depend on AWA, RDC, or the normal Repo MCP
 process. The supervisor runs the OpenAI connector independently and restarts it
 with bounded backoff:
 
-GUI lifecycle is separate from that connector cycle. The OpenAI connector starts
-Core once and replaces only its own tunnel generation on tunnel failure. Core
-functional liveness is checked separately as described below. Recovery after
-supervisor failure and job persistence remain out of scope. A Core restart still loses in-memory job
-handles; GUI and tunnel recovery do not. Configuration changes require an explicit
-controlled restart; GUI configuration is not hot-reloaded across connector retries.
+GUI lifecycle is separate from ordinary connector failure recovery. The OpenAI
+connector starts Core once and replaces only its own tunnel generation on tunnel
+failure. Core functional liveness is checked separately as described below.
+Recovery after supervisor failure and job persistence remain out of scope. A Core
+restart still loses in-memory job handles; GUI and tunnel recovery do not.
+
+The supervisor now reconciles deliberate local configuration changes automatically.
+It fingerprints the effective `host.env` plus the selected Host Breakglass config
+while the stack is running. A changed candidate must settle to the same fingerprint
+and then pass the built Core's own `--validate-config` path before teardown; invalid,
+temporarily incomplete, or schema-invalid candidates leave the current runtime
+serving and are surfaced as `config_reload.status=blocked` in supervisor state. A
+valid change causes a controlled connector/Core/tunnel and GUI recycle with no
+failure backoff.
+The replacement connector accepts Core readiness only when `/health` reports the
+expected `mode` and `full_host_access`. The supervisor never chooses or rewrites
+those policy values itself; it only converges the running stack to the operator-
+supplied configuration.
 
 ```powershell
 npm run host:supervisor
@@ -442,7 +457,7 @@ Explicit Windows real-runtime gate:
 release to a new OS temporary directory outside the repository, uses isolated
 state/configuration/audit and free alternative loopback ports, starts the real
 Computer-Use backend, probes its MCP handshake and read-only display-size call,
-and verifies native Core health and 40 MCP tools. The real tunnel runs against
+and verifies native Core health and 41 MCP tools. The real tunnel runs against
 an isolated local control-plane stub via the connector's existing test seam;
 production credentials and the real remote control plane are not used. The
 actual supervisor entry is separately imported/started against an isolated

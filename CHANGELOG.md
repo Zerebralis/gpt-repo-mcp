@@ -12,6 +12,7 @@ All notable public changes to GPT Repo MCP are documented here.
 
 ### Changed
 
+- Host Breakglass supervisor now reconciles validated local config changes automatically: candidates settle, pass the built Core's exact config parser, then recycle the supervised stack without failure backoff; runtime `/health` exposes `mode` and `full_host_access` so stale policy cannot be accepted as ready.
 - Hardened Host Breakglass Streamable HTTP session handling for ChatGPT Secure Tunnel workflows: 100-session default capacity, 10-minute idle TTL, aggregate session telemetry on `/health`, and explicit capacity diagnostics.
 
 ## [0.2.0] - 2026-07-31
