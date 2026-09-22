@@ -29,6 +29,15 @@ if (publicPathToken && publicPathToken.length < 24) {
 }
 
 const config = await loadHostBreakglassConfig(configPath);
+if (process.argv.includes("--validate-config")) {
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    mode: config.mode,
+    full_host_access: config.full_host_access,
+    computer_use: config.computer_use.enabled
+  }));
+  process.exit(0);
+}
 const context = createHostBreakglassContext(config);
 const app = express();
 app.disable("x-powered-by");
