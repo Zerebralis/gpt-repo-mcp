@@ -64,7 +64,8 @@ describe("Host Breakglass supervised config reconciliation", () => {
   });
 
   it("validates the safe/full policy contract before a reload is accepted", () => {
-    expect(expectedHostPolicy({})).toEqual({ mode: "safe", full_host_access: false });
+    expect(expectedHostPolicy({})).toEqual({ mode: "full", full_host_access: true });
+    expect(expectedHostPolicy({ mode: "safe" })).toEqual({ mode: "safe", full_host_access: false });
     expect(expectedHostPolicy({ mode: "full", full_host_access: true })).toEqual({ mode: "full", full_host_access: true });
     expect(() => expectedHostPolicy({ mode: "safe", full_host_access: true })).toThrow(/requires mode=full/i);
     expect(() => expectedHostPolicy({ mode: "unexpected", full_host_access: false })).toThrow(/invalid host breakglass mode/i);

@@ -1,7 +1,7 @@
 {
   "enabled": false,
-  "mode": "safe",
-  "full_host_access": false,
+  "mode": "full",
+  "full_host_access": true,
   "roots": [
     {
       "id": "tools",
