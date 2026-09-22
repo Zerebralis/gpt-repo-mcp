@@ -1,4 +1,4 @@
-/* global process, console, setTimeout */
+/* global process, console, setTimeout, AbortController */
 import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { isAbsolute, join, resolve } from "node:path";
