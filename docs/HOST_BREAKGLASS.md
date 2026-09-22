@@ -263,10 +263,12 @@ restart still loses in-memory job handles; GUI and tunnel recovery do not.
 
 The supervisor now reconciles deliberate local configuration changes automatically.
 It fingerprints the effective `host.env` plus the selected Host Breakglass config
-while the stack is running. A changed candidate is preflighted before teardown; an
-invalid or temporarily incomplete candidate leaves the current runtime serving and
-is surfaced as `config_reload.status=blocked` in supervisor state. A valid change
-causes a controlled connector/Core/tunnel and GUI recycle with no failure backoff.
+while the stack is running. A changed candidate must settle to the same fingerprint
+and then pass the built Core's own `--validate-config` path before teardown; invalid,
+temporarily incomplete, or schema-invalid candidates leave the current runtime
+serving and are surfaced as `config_reload.status=blocked` in supervisor state. A
+valid change causes a controlled connector/Core/tunnel and GUI recycle with no
+failure backoff.
 The replacement connector accepts Core readiness only when `/health` reports the
 expected `mode` and `full_host_access`. The supervisor never chooses or rewrites
 those policy values itself; it only converges the running stack to the operator-
