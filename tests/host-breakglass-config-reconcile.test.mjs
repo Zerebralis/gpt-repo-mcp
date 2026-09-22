@@ -1,3 +1,4 @@
+/* global AbortController */
 import { describe, expect, it } from "vitest";
 import {
   expectedHostPolicy,
