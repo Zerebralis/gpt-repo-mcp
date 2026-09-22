@@ -13,6 +13,7 @@ import { hostListDirectory, hostReadFile, hostSearch, hostStat, hostWriteFile } 
 import { hostEditFile } from "./edit-file.js";
 import { hostGit } from "./git.js";
 import { assertProcessStartAllowed, assertShellCommandAllowed, minimalHostEnv } from "./shell-policy.js";
+import { hostReviewRuntime, type HostReviewRuntimeInput } from "./review-runtime.js";
 import { shortHash, type HostAuditEvent } from "./audit.js";
 import { hostEventLogQuery, hostKillSystemProcess, hostNetworkListeners, hostPortOwner, hostRegistryRead, hostRegistryWrite, hostScheduledTaskControl, hostScheduledTaskGet, hostScheduledTaskList, hostServiceControl, hostServiceList, hostSystemInfo, hostSystemProcessDetail, hostSystemProcesses, hostSystemProcessTree } from "./windows.js";
 
@@ -25,7 +26,7 @@ const changePackItem = z.discriminatedUnion("type", [
   z.object({ type: z.literal("write"), path: P, content: z.string(), create_directories: z.boolean().default(false), expected_old_sha256: sha256Value.optional(), expected_missing: z.boolean().default(false) }).strict(),
   z.object({ type: z.literal("replace"), path: P, find: z.string().min(1), replace: z.string(), replace_all: z.boolean().default(false), expected_old_sha256: sha256Value.optional() }).strict()
 ]);
-export const HOST_BREAKGLASS_TOOL_COUNT = 40;
+export const HOST_BREAKGLASS_TOOL_COUNT = 41;
 
 async function assertExistingWorkingDirectory(path: string): Promise<void> {
   let info;
@@ -92,6 +93,48 @@ export function registerHostBreakglassTools(server: McpServer, context: HostBrea
   server.registerTool("host_process_input", { title: "Write process input", description: "Write bounded UTF-8 input to stdin of a running managed process; optionally close stdin. This is line-oriented process input, not a full PTY.", inputSchema: { job_id: z.string().uuid(), chars: z.string().max(100_000).default(""), end: z.boolean().default(false) }, annotations: nonDestructiveMutationAnnotations }, async (args) => executeTool(context, "host_process_input", async () => context.processes.input(args.job_id, args.chars, args.end), { target_kind: "process-input" }));
   server.registerTool("host_process_list", { title: "List/reconcile managed processes", description: "List processes started by this breakglass server. Pass job_id after an indeterminate host_process_output failure to perform one bounded manager-state reconciliation for that exact job id; this call never starts or retries a process.", inputSchema: { job_id: z.string().uuid().optional() }, annotations: readOnlyAnnotations }, async (args) => executeTool(context, "host_process_list", async () => args.job_id ? context.processes.reconcile(args.job_id) : context.processes.list()));
   server.registerTool("host_process_kill", { title: "Stop managed process", description: "Stop a process previously started by this breakglass server.", inputSchema: { job_id: z.string().uuid() }, annotations: writeAnnotations }, async (args) => executeTool(context, "host_process_kill", async () => context.processes.kill(args.job_id)));
+
+  server.registerTool("host_review_runtime", {
+    title: "Canonical Review Runtime",
+    description: "Run the hash-pinned canonical Zerebralis Review Runtime through a structured action. Safe mode does not permit arbitrary script paths: deployment receipt, source/version, and every installed runtime file are verified before build_packet, review, or status starts. build_packet/review return a managed job id; observe that same job with host_process_output/list.",
+    inputSchema: {
+      action: z.enum(["build_packet", "review", "status"]),
+      repo_path: P.optional(),
+      base_sha: z.string().regex(/^[a-fA-F0-9]{40}$/).optional(),
+      candidate_sha: z.string().regex(/^[a-fA-F0-9]{40}$/).optional(),
+      instructions_file: P.optional(),
+      prompt_file: P.optional(),
+      output_file: P.optional(),
+      mode: z.enum(["Exact", "Compact"]).optional(),
+      contract_files: z.array(z.string().min(1).max(2_000)).max(50).optional(),
+      evidence_files: z.array(P).max(50).optional(),
+      prior_findings_file: P.optional(),
+      diff_paths: z.array(z.string().min(1).max(2_000)).max(100).optional(),
+      reviewer: z.enum(["Auto", "Gemini", "Qwen", "GPTOSS", "OpenRouter"]).optional(),
+      review_tier: z.enum(["R0", "R1", "R2"]).optional(),
+      allow_cloud: z.boolean().optional(),
+      advisory_only: z.boolean().optional(),
+      run_groq_scout: z.boolean().optional(),
+      groq_scout_output_file: P.optional(),
+      builder_provider: z.enum(["Unknown", "Gemini", "Qwen", "GPTOSS", "OpenRouter", "Groq", "OpenAI", "Other"]).optional(),
+      allow_same_provider_fresh_context: z.boolean().optional(),
+      timeout_minutes: z.number().int().min(1).max(30).optional(),
+      r2_effort: z.enum(["low", "medium", "high"]).optional(),
+      receipt_file: P.optional(),
+      deep: z.boolean().optional(),
+      timeout_ms: pos.max(3_600_000).optional()
+    },
+    annotations: nonDestructiveMutationAnnotations
+  }, async (args) => executeTool(
+    context,
+    "host_review_runtime",
+    () => hostReviewRuntime(context, args as HostReviewRuntimeInput),
+    {
+      root_id: args.repo_path ? rootForPath(context, args.repo_path) : undefined,
+      command_hash: shortHash(JSON.stringify(args)),
+      target_kind: `review-runtime:${args.action}`
+    }
+  ));
 
   server.registerTool("host_git", { title: "Host Git", description: "Run bounded Git status/diff/log/branch/add/commit/fetch/fast-forward pull/push/merge inside an approved root.", inputSchema: { cwd: P, operation: z.enum(["status", "diff", "log", "branch", "add", "commit", "fetch", "pull", "push", "merge"]), paths: z.array(z.string().min(1)).max(500).optional(), message: z.string().max(500).optional(), remote: z.string().min(1).max(200).optional(), branch: z.string().min(1).max(300).optional(), ref: z.string().min(1).max(300).optional(), staged: z.boolean().default(false), expected_head: z.string().regex(/^[a-fA-F0-9]{40,64}$/).optional() }, annotations: writeAnnotations }, async (args) => executeTool(context, "host_git", () => hostGit(context, args), { root_id: rootForPath(context, args.cwd), target_kind: `git:${args.operation}` }));
 

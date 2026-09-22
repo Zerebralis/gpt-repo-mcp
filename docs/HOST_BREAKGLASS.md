@@ -56,11 +56,12 @@ general-purpose runtime.
 
 ## Tool Surface
 
-The host server currently exposes 40 tools:
+The host server currently exposes 41 tools:
 
 - roots and filesystem: list roots, stat, read, write, exact edit, directory
   listing, and bounded search;
 - execution: bounded shell plus managed process start/output/list/kill;
+- review interop: `host_review_runtime` exposes only the hash-pinned canonical Review Runtime actions `build_packet`, `review`, and `status`; the deployment receipt itself is SHA-256 pinned in reviewed Breakglass source and every installed runtime file is re-hashed before execution;
 - Git: status, diff, log, branch, add, commit, fetch, fast-forward pull, push,
   and merge;
 - Windows: system information, process listing and guarded process termination,
