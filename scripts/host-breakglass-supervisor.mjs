@@ -3,6 +3,7 @@ import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { computerUseLaunchSpec, createGuiRuntime } from "./host-breakglass-gui-runtime.mjs";
+import { fingerprintHostConfiguration, waitForValidatedConfigurationChange } from "./host-breakglass-config-watch.mjs";
 
 const repoRoot = resolve(process.env.GPT_HOST_BREAKGLASS_REPO_ROOT ?? process.cwd());
 const stateDir = process.env.GPT_HOST_BREAKGLASS_STATE_DIR ?? join(process.env.LOCALAPPDATA ?? repoRoot, "gpt-repo-host-breakglass");
@@ -38,6 +39,7 @@ while (!stopping) {
   }
 
   const startedAt = Date.now();
+  let controlledReload = false;
   try {
     if (!gui) {
       gui = createGuiRuntime(preflight.guiSpec, {
@@ -56,14 +58,44 @@ while (!stopping) {
       status: "running",
       restart_count: restarts,
       connector_pid: connector.pid ?? null,
-      computer_use_pid: gui.state().pid
+      computer_use_pid: gui.state().pid,
+      config_reload: { status: "watching" }
     });
 
-    const ended = await Promise.race(
-      [...children.entries()].map(([label, child]) => waitForExit(child).then((result) => ({ label, ...result })))
-    );
+    const watchAbort = new AbortController();
+    const configWatch = waitForValidatedConfigurationChange({
+      expectedFingerprint: preflight.fingerprint,
+      readPreflight: preflightConfig,
+      signal: watchAbort.signal,
+      onBlocked: async (reason) => {
+        log(`config reload blocked: ${reason}`);
+        await writeState({ config_reload: { status: "blocked", reason } });
+      },
+      onRecovered: async () => {
+        log("config reload candidate valid again");
+        await writeState({ config_reload: { status: "watching" } });
+      }
+    });
+    const ended = await Promise.race([
+      ...[...children.entries()].map(([label, child]) => waitForExit(child).then((result) => ({ kind: "child", label, ...result }))),
+      configWatch.then((result) => ({ kind: "config", ...result }))
+    ]);
+    watchAbort.abort();
+    await configWatch.catch(() => undefined);
     if (stopping) break;
-    log(`${ended.label} exit code=${ended.code ?? "null"} signal=${ended.signal ?? "null"}`);
+    if (ended.kind === "config" && ended.changed) {
+      controlledReload = true;
+      log("validated configuration change detected; recycling connector/core");
+      await writeState({
+        status: "reloading",
+        restart_count: restarts,
+        restart_in_ms: 0,
+        reason: "configuration_changed",
+        config_reload: { status: "applying" }
+      });
+    } else {
+      log(`${ended.label} exit code=${ended.code ?? "null"} signal=${ended.signal ?? "null"}`);
+    }
   } catch (error) {
     if (!stopping) log(`cycle failure: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
@@ -71,6 +103,16 @@ while (!stopping) {
   }
 
   if (stopping) break;
+  if (controlledReload) {
+    await writeState({
+      status: "restarting",
+      restart_count: restarts,
+      restart_in_ms: 0,
+      reason: "configuration_changed",
+      config_reload: { status: "applying" }
+    });
+    continue;
+  }
   const runtimeMs = Date.now() - startedAt;
   if (runtimeMs > 5 * 60_000) restarts = 0;
   else restarts += 1;
@@ -81,7 +123,7 @@ while (!stopping) {
 }
 
 async function preflightConfig() {
-  const envPath = process.env.GPT_HOST_BREAKGLASS_ENV ?? join(stateDir, "host.env");
+  const envPath = resolve(process.env.GPT_HOST_BREAKGLASS_ENV ?? join(stateDir, "host.env"));
   let raw;
   try { raw = await readFile(envPath, "utf8"); }
   catch { return { ok: false, reason: "host.env missing" }; }
@@ -92,8 +134,11 @@ async function preflightConfig() {
   // Tunnel binary availability belongs to the connector-local tunnel generation.
 
   const configPath = resolve(values.GPT_HOST_BREAKGLASS_CONFIG?.trim() || join(repoRoot, "config.host-breakglass.local.json"));
-  let config;
-  try { config = JSON.parse((await readFile(configPath, "utf8")).replace(/^\uFEFF/, "")); }
+  let configRaw, config;
+  try {
+    configRaw = await readFile(configPath, "utf8");
+    config = JSON.parse(configRaw.replace(/^\uFEFF/, ""));
+  }
   catch { return { ok: false, reason: "host-breakglass config missing or invalid" }; }
 
   const env = { ...process.env, ...values, GPT_HOST_BREAKGLASS_CONFIG: configPath };
@@ -104,7 +149,13 @@ async function preflightConfig() {
   return {
     ok: true,
     env,
-    guiSpec
+    guiSpec,
+    fingerprint: fingerprintHostConfiguration({
+      envPath,
+      envRaw: raw,
+      configPath,
+      configRaw
+    })
   };
 }
 
