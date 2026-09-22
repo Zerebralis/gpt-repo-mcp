@@ -132,6 +132,23 @@ For mutating operations, first classify the observed state:
 
 Only clearly transient **read-only** failures are good candidates for bounded automatic retry. For mutations, establish actual state before deciding whether another operation is safe.
 
+## Productive mutations expose their target explicitly
+
+For tool-mediated installers, deployments, and other productive host writes, the mutation boundary should be visible in the mutating request itself whenever the underlying command supports a target/root/path argument.
+
+Durable rules:
+
+- resolve and inspect the intended target read-only before mutation;
+- pass the verified target as a **literal absolute path** in the mutating tool call;
+- do not rely on an omitted installer target, environment-variable expansion, current-directory inference, or another internally derived default when an explicit target argument exists;
+- keep source identity explicit as well when the deployment contract supports an expected commit/SHA;
+- after mutation, verify the physical target independently through the deployment receipt, source binding, expected file set and hashes as appropriate;
+- never obfuscate, encode, split, or indirect a command/path merely to get past an upstream safety check.
+
+This rule is not a workaround for safety policy. It makes already-authorized scope explicit enough for every enforcement layer to evaluate the same bounded mutation.
+
+A platform/tool safety rejection that occurs **before** Breakglass execution is a different failure layer from a Breakglass policy rejection or an MCP/connector transport failure. If the outer layer rejects an implicit target, make the intended target explicit and retry only the same bounded authorized action. If Breakglass itself rejects the request, satisfy only the documented Breakglass policy/approval contract. If the control channel fails after execution may have started, reconcile jobs/processes/files/receipts first and never blindly replay the mutation.
+
 ## Composition before more top-level tools
 
 Further efficiency should first come from better composition of existing primitives:
