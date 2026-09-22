@@ -1,4 +1,4 @@
-/* global setTimeout */
+/* global setTimeout, clearTimeout */
 import { createHash } from "node:crypto";
 
 export function fingerprintHostConfiguration({ envPath, envRaw, configPath, configRaw }) {
