@@ -13,6 +13,21 @@ export function fingerprintHostConfiguration({ envPath, envRaw, configPath, conf
     .digest("hex");
 }
 
+export function expectedHostPolicy(config) {
+  const mode = config?.mode ?? "safe";
+  const fullHostAccess = config?.full_host_access ?? false;
+  if (mode !== "safe" && mode !== "full") {
+    throw new Error("Invalid Host Breakglass mode in config");
+  }
+  if (typeof fullHostAccess !== "boolean") {
+    throw new Error("Invalid Host Breakglass full_host_access in config");
+  }
+  if (fullHostAccess && mode !== "full") {
+    throw new Error("Host Breakglass full_host_access requires mode=full");
+  }
+  return { mode, full_host_access: fullHostAccess };
+}
+
 export async function waitForValidatedConfigurationChange({
   expectedFingerprint,
   readPreflight,
