@@ -49,5 +49,6 @@ describe("Host Breakglass attachment/discovery guidance", () => {
     expect(roots?.description).toContain("Canonical read-only attachment handshake");
     expect(roots?.description).toContain("successful call proves Host Breakglass is reachable");
     expect(listed.tools.some((tool) => tool.name === "host_system_info")).toBe(true);
+    expect(listed.tools.some((tool) => tool.name === "host_review_runtime")).toBe(true);
   });
 });
