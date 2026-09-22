@@ -105,11 +105,16 @@ while (!stopping) {
 
   if (stopping) break;
   if (controlledReload) {
+    if (gui) {
+      await gui.stop();
+      gui = undefined;
+    }
     await writeState({
       status: "restarting",
       restart_count: restarts,
       restart_in_ms: 0,
       reason: "configuration_changed",
+      computer_use_pid: null,
       config_reload: { status: "applying" }
     });
     continue;
