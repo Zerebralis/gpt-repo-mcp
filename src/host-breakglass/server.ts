@@ -48,7 +48,7 @@ const mcpRoutes = buildMcpRoutePatterns(publicPathToken);
 
 app.get("/health", (_req, res) => {
   const stats = transports.stats();
-  res.json({ ok: true, name: "gpt-repo-host-breakglass", mode: config.mode, tool_count: HOST_BREAKGLASS_TOOL_COUNT, computer_use: config.computer_use.enabled, mcp_sessions: { ...stats, capacity: maxSessions, soft_target: sessionSoftTarget, pressure_high_watermark: sessionPressureHighWatermark, idle_ttl_ms: sessionIdleTtlMs, pressure_idle_ttl_ms: sessionPressureIdleTtlMs } });
+  res.json({ ok: true, name: "gpt-repo-host-breakglass", mode: config.mode, full_host_access: config.full_host_access, tool_count: HOST_BREAKGLASS_TOOL_COUNT, computer_use: config.computer_use.enabled, mcp_sessions: { ...stats, capacity: maxSessions, soft_target: sessionSoftTarget, pressure_high_watermark: sessionPressureHighWatermark, idle_ttl_ms: sessionIdleTtlMs, pressure_idle_ttl_ms: sessionPressureIdleTtlMs } });
 });
 
 function authorized(req: Request, res: Response): boolean {
