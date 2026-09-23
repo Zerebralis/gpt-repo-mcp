@@ -63,6 +63,20 @@ as safely parsed. Arbitrary executable programs remain arbitrary executable code
 Safe Mode does not claim code containment or a sandbox for a deliberately hostile
 general-purpose runtime.
 
+### Tool-mediated deployment safety
+
+For an authorized productive installer/deployment, first resolve the intended write target read-only. If the command supports an install root, destination, output directory, or equivalent target argument, pass the verified target as a **literal absolute path** in the mutating call. Do not hide the productive destination behind an omitted default, environment variable, current working directory, wrapper-side inference, encoding, or command indirection.
+
+Treat failures at three layers separately:
+
+| Layer | Typical evidence | Response |
+|---|---|---|
+| Outer tool/safety gate | The invocation is rejected before normal Breakglass execution/output. | Do not bypass the gate. Make the already-authorized target/scope explicit and literal, then retry only the same bounded action if no host execution occurred. |
+| Breakglass policy | Breakglass returns its own structured policy/approval error. | Verify Full posture and supply only the documented operation approval already authorized by the task. Do not restart Breakglass to clear policy. |
+| MCP/connector transport | `Connection failed`, unavailable/timeout, or lost attachment after execution may have started. | Re-establish read-only observation and reconcile managed job/process/output/receipt state before any retry. Never assume the host-side action stopped. |
+
+This classification does not claim knowledge of undocumented platform rule IDs. It exists to prevent three very different failures from being collapsed into “Breakglass died” and to prevent duplicate mutations after ambiguous transport loss.
+
 ## Tool Surface
 
 The host server currently exposes 42 tools:
