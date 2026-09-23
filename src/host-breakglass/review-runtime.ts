@@ -5,9 +5,9 @@ import { z } from "zod";
 import type { HostBreakglassContext } from "./context.js";
 import { isWithin } from "./path-policy.js";
 
-const PINNED_DEPLOYMENT_RECEIPT_SHA256 = "bcdad119e96a6daeca24643e1e0209c1279a7f766f1b84ebba2a64c84ee14929";
+const PINNED_DEPLOYMENT_RECEIPT_SHA256 = "aad953d114e26b9ebc4f65531ed3c963caf442717ecba3b0450388406e4f7ec4";
 const PINNED_RUNTIME_VERSION = "2.4.0";
-const PINNED_SOURCE_SHA = "bb28b38bc9ae3e56df1d97044a63807b83ef2842";
+const PINNED_SOURCE_SHA = "cb402d46de8412a8414fbb9ee5ab346c1ffeb109";
 
 const REQUIRED_TARGETS = [
   "Reviewers\\Build-ReviewPacket.ps1",
