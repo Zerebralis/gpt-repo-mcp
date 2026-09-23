@@ -1,5 +1,6 @@
 /* global fetch, process, setTimeout, clearTimeout */
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,8 +53,8 @@ async function fixture(overrides = {}) {
   const configPath = join(root, "config.json");
   await writeFile(configPath, JSON.stringify({
     enabled: true,
-    mode: "safe",
-    full_host_access: false,
+    mode: overrides.fullMode ? "full" : "safe",
+    full_host_access: overrides.fullMode === true,
     roots: [{ id: "fixture", root, read: true, write: true, execute: true }],
     computer_use: { enabled: false, server_url: "http://127.0.0.1:3107/mcp" },
     audit_path: join(root, "audit.jsonl")
@@ -79,7 +80,7 @@ async function fixture(overrides = {}) {
   children.push(child);
   const base = `http://127.0.0.1:${port}`;
   await waitForHealth(base + "/health");
-  return { base };
+  return { base, root };
 }
 
 async function initializeSession(base, id) {
@@ -291,4 +292,123 @@ describe("Host Breakglass Streamable HTTP session errors", () => {
     expect(health.mcp_sessions.cumulative.pressure_reclaim_reuse_attempts).toBeGreaterThan(0);
     expect(health.mcp_sessions.cumulative.admission_rejected).toBe(0);
   }, 15_000);
+});
+
+/* global AbortSignal */
+async function sessionRpc(base, sessionId, id, method, params = {}) {
+  const response = await fetch(base + "/mcp", {
+    method: "POST", signal: AbortSignal.timeout(5_000),
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-session-id": sessionId },
+    body: JSON.stringify({ jsonrpc: "2.0", id, method, params })
+  });
+  const text = await response.text();
+  expect(response.status).toBe(200);
+  const messages = text.trim().startsWith("{") ? [JSON.parse(text)]
+    : text.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => JSON.parse(line.slice(5).trim()));
+  const message = messages.find((entry) => entry.id === id);
+  expect(message?.error).toBeUndefined();
+  expect(message?.result).toBeDefined();
+  return message.result;
+}
+
+function toolResult(result) {
+  expect(result.isError).not.toBe(true);
+  const parsed = JSON.parse(result.content.find((entry) => entry.type === "text").text);
+  expect(parsed.ok).toBe(true);
+  return parsed.result;
+}
+
+async function assertCompleteTools(base, sessionId, id, expectedInstance) {
+  const listed = await sessionRpc(base, sessionId, id, "tools/list");
+  expect(listed.nextCursor).toBeUndefined();
+  const names = listed.tools.map((tool) => tool.name).sort();
+  expect(names).toHaveLength(42);
+  expect(new Set(names).size).toBe(42);
+  const roots = toolResult(await sessionRpc(base, sessionId, id + 1, "tools/call", { name: "host_list_roots", arguments: {} }));
+  expect(roots).toMatchObject({ mode: "full", full_host_access: true });
+  expect(roots.backend_attachment.instance_id).toBe(expectedInstance);
+  expect(roots.backend_attachment.tool_manifest).toEqual({
+    scope: "tool_names_only", tool_count: 42, tool_names: names,
+    tool_names_sha256: createHash("sha256").update(JSON.stringify(names)).digest("hex")
+  });
+  return names;
+}
+
+describe("Full-mode capability continuity in an isolated HTTP fixture", () => {
+  test("pressure reclaim preserves keeper/fresh inventories and rejects a stale mutation without replay", async () => {
+    const { base, root } = await fixture({ fullMode: true, idleTtlMs: 20_000, pressureIdleTtlMs: 1_000 });
+    const initialHealth = await (await fetch(base + "/health")).json();
+    const keeper = await initializeSession(base, 2001);
+    const victim = await initializeSession(base, 2002);
+    const file = join(root, "exactly-once.txt");
+    const mutation = { name: "host_write_file", arguments: { path: file, content: "once\n", mode: "append" } };
+    toolResult(await sessionRpc(base, victim, 2003, "tools/call", mutation));
+    // The already-confirmed victim write precedes the other sessions, making it oldest after keeper refresh.
+    for (let index = 0; index < 6; index += 1) await initializeSession(base, 2010 + index);
+    const soft = await (await fetch(base + "/health")).json();
+    expect(soft.mcp_sessions.active).toBe(8);
+    const before = await assertCompleteTools(base, keeper, 2020, initialHealth.instance_id);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    await sessionRpc(base, keeper, 2030, "tools/list");
+    await initializeSession(base, 2040);
+    const high = await (await fetch(base + "/health")).json();
+    expect(high.mcp_sessions.active).toBe(9);
+    const replacement = await initializeSession(base, 2041);
+    const pressure = await (await fetch(base + "/health")).json();
+    expect(pressure.mcp_sessions.cumulative.pressure_reclaimed).toBeGreaterThan(0);
+    expect(pressure.mcp_sessions.cumulative.emergency_reclaimed).toBe(0);
+    expect(pressure.mcp_sessions.cumulative.admission_rejected).toBe(0);
+
+    const staleWrite = await fetch(base + "/mcp", {
+      method: "POST", signal: AbortSignal.timeout(5_000),
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-session-id": victim },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2050, method: "tools/call", params: mutation })
+    });
+    expect(staleWrite.status).toBe(404);
+    expect(await staleWrite.json()).toMatchObject({ error: { code: -32001, message: "Session not found" } });
+    expect(await readFile(file, "utf8")).toBe("once\n");
+    expect(await assertCompleteTools(base, keeper, 2060, initialHealth.instance_id)).toEqual(before);
+    expect(await assertCompleteTools(base, replacement, 2070, initialHealth.instance_id)).toEqual(before);
+    // Rebinding and enumerating must not automatically replay the rejected append.
+    expect(await readFile(file, "utf8")).toBe("once\n");
+    const finalHealth = await (await fetch(base + "/health")).json();
+    expect(finalHealth.instance_id).toBe(initialHealth.instance_id);
+    expect(finalHealth.started_at).toBe(initialHealth.started_at);
+    expect(finalHealth.mcp_sessions.cumulative.pressure_reclaim_reuse_attempts).toBe(1);
+    expect(finalHealth.mcp_sessions.cumulative.unknown_session_misses).toBe(0);
+  }, 15_000);
+
+  test("normal idle expiry followed by fresh initialize preserves the same complete manifest", async () => {
+    const { base } = await fixture({ fullMode: true, idleTtlMs: 1_000, pressureIdleTtlMs: 1_000 });
+    const initialHealth = await (await fetch(base + "/health")).json();
+    const old = await initializeSession(base, 3000);
+    const before = await assertCompleteTools(base, old, 3010, initialHealth.instance_id);
+    await new Promise((resolve) => setTimeout(resolve, 1_150));
+    // Admission explicitly sweeps normal expiry, independent of periodic timer alignment.
+    const fresh = await initializeSession(base, 3020);
+    const stale = await fetch(base + "/mcp", {
+      method: "POST", signal: AbortSignal.timeout(5_000),
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-session-id": old },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 3030, method: "tools/list", params: {} })
+    });
+    expect(stale.status).toBe(404);
+    await stale.text();
+    expect(await assertCompleteTools(base, fresh, 3040, initialHealth.instance_id)).toEqual(before);
+    const finalHealth = await (await fetch(base + "/health")).json();
+    expect(finalHealth.mcp_sessions.cumulative.normal_expired).toBeGreaterThan(0);
+    expect(finalHealth.mcp_sessions.cumulative.normal_expiry_reuse_attempts).toBe(1);
+    expect(finalHealth.mcp_sessions.cumulative.pressure_reclaimed).toBe(0);
+  }, 10_000);
+
+  test("six concurrent Full clients receive identical 42-tool manifests at low pressure", async () => {
+    const { base } = await fixture({ fullMode: true });
+    const health = await (await fetch(base + "/health")).json();
+    const sessions = await Promise.all(Array.from({ length: 6 }, (_, index) => initializeSession(base, 4000 + index)));
+    const lists = await Promise.all(sessions.map((session, index) => assertCompleteTools(base, session, 4100 + index * 2, health.instance_id)));
+    for (const names of lists) expect(names).toEqual(lists[0]);
+    const after = await (await fetch(base + "/health")).json();
+    expect(after.mcp_sessions.active).toBe(6);
+    expect(after.mcp_sessions.cumulative.pressure_reclaimed).toBe(0);
+    expect(after.mcp_sessions.cumulative.admission_rejected).toBe(0);
+  }, 10_000);
 });
