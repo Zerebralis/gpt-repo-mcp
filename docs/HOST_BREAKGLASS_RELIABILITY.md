@@ -2,6 +2,16 @@
 
 This runbook records the two distinct reliability incidents found during RDC-retirement acceptance in September 2026. They can look similar from ChatGPT because both may surface as connector/tool failures, but they live at different layers and require different diagnosis.
 
+## Operator role as of 2026-09-24
+
+In Markus' host stack, Host Breakglass is no longer the default generic PC transport. The default for routine ChatGPT-to-Windows work is **Windows MCP** (CursorTouch Windows-MCP over the OpenAI Secure MCP Tunnel).
+
+Host Breakglass remains intentionally live as a **specialist and fallback layer** for Breakglass-specific capabilities such as the Review Runtime, structured Git/diagnostic/recovery paths, richer typed host evidence, or a capability that Windows MCP does not expose appropriately. It is also the fallback when the Windows-MCP path itself is unavailable.
+
+This is a caller/operator routing decision, not a deprecation of the server and not a change to Breakglass Full/Safe semantics. When Breakglass is selected, its existing policy remains authoritative. A refusal or platform safety block on Windows MCP is not permission to reconstruct the same operation through Breakglass merely to bypass that refusal.
+
+Live A/B and recovery checks on 2026-09-24 found Windows MCP materially faster for desktop snapshots and screenshots, faster for process listing and typical shell calls, and roughly comparable for simple file reads. A mixed 12-call burst passed 12/12; file write/read/delete, app launch, UI input and automatic server/tunnel crash recovery were also verified. These observations justify the routing change but do not justify deleting Breakglass or removing its specialist capabilities.
+
 ## Failure mode A: MCP session-capacity exhaustion
 
 ### External symptom
