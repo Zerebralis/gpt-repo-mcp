@@ -40,7 +40,7 @@
     "list": "node dist/cli/connect-gpt.js list",
     "check:config": "node dist/cli/connect-gpt.js check",
     "doctor": "npm run build && node dist/cli/connect-gpt.js doctor",
-    "build": "tsup src/server.ts src/host-breakglass/server.ts --format esm --dts --clean --external typescript && tsup src/cli/connect-gpt.ts --format esm --out-dir dist/cli --external typescript",
+    "build": "tsup src/server.ts src/host-breakglass/server.ts src/agent-orchestration.ts --format esm --dts --clean --external typescript && tsup src/cli/connect-gpt.ts --format esm --out-dir dist/cli --external typescript",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
