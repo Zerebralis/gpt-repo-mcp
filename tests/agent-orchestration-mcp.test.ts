@@ -68,4 +68,22 @@ describe("orchestration against the real MCP contract",()=>{
     const result=await session.diagnostics(metadata,[{tool:"stat",args:{path:join(root,"..","not-approved")}},{tool:"stat",args:{path:join(root,"allowed")}}]);
     expect(result.map(r=>r.status)).toEqual(["failed","succeeded"]);
   });
+  it("R2 retains an actual denied stat member across individual and alternative dispatch paths",async()=>{
+    const {root,session,dispatch}=await fixture();const allowed=join(root,"allowed"),refused=join(root,"..","not-approved");
+    await writeFile(allowed,"safe");const intent="inspect-file";
+    const result=await session.diagnostics({...metadata,id:"diagnose"},[
+      {tool:"stat",args:{path:refused},identity:{intent,target:refused}},
+      {tool:"stat",args:{path:allowed},identity:{intent,target:allowed}}
+    ]);
+    expect(result.map(r=>r.status)).toEqual(["failed","succeeded"]);
+    // The existing host batch uses a legacy string error. Do not invent a native BACKEND_POLICY code.
+    expect(result[0].errorClass).toBe("UNKNOWN");
+    for(const name of ["host_stat","host_read_file"]) {
+      const retry=await session.execute({...metadata,id:name,intent,target:refused,mutating:false,call:{name,arguments:{path:refused}}});
+      expect(retry).toMatchObject({status:"suppressed",reason:"EQUIVALENT_RETRY"});
+    }
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect((await session.execute({...metadata,id:"allowed-stat",intent,target:allowed,mutating:false,call:{name:"host_stat",arguments:{path:allowed}}})).status).toBe("succeeded");
+    expect(dispatch).toHaveBeenCalledTimes(2);
+  });
 });

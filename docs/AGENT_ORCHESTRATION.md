@@ -66,9 +66,15 @@ Member denials are retained by effect/path, including across a subsequent execut
 
 `diagnostics` uses the existing `host_diagnostics_batch` response (`operations`, `succeeded`, `failed`) with a maximum of 16 supported read operations. Managed `host_process_list` is **not** the `system_processes` OS diagnostic. Dependent/derived paths are not pre-batched; resolve a parent first, then explicitly dispatch its dependent child. Mutations are not accepted by these batch helpers.
 
+Diagnostic members accept a caller-only `identity: {intent, target}`. Supply the same normalized identity used by equivalent `execute` calls, even when their executor differs. Without an explicit identity, the member uses the batch's `intent` and a target of `JSON.stringify([tool, argsWithSortedKeys])`; supported diagnostic arguments are flat scalar records. The batch's authorization revision and change evidence apply to each member. Identity metadata is stripped from the host request. Fresh independent members are reserved together; members with existing history use guarded singleton diagnostic batches through the same retry verifier, policy-block counter and busy/ambiguity checks as `execute`. A successful sibling does not inherit another member's denial.
+
+Suppressed batch admission propagates the actual reason and releases member reservations without creating failures. Missing member results after an aggregate failure are reported as unavailable/incomplete; only the aggregate retains its attributable failure history. No individual denial is inferred from a lost aggregate response. A caller may retry an individual read-only diagnostic through its normal guarded contract; the adapter does not claim which members the host executed when their results are missing.
+
 ### PROGRESS_STALL_REPORTING
 
 Each lane represents a logical subtask. The adapter immediately emits a blocker event on a returned hard failure. Events contain pseudonymized subtask/effect/target IDs, attempt count, error class, progress/blocker state, last successful evidence ID, changed/missing condition and next-action category. They contain no command, argument, approval text or response body. The host UI maps identifiers to approved human-readable labels and reports operational facts, never internal reasoning.
+
+Reusing a lane updates its current effect/target without resetting elapsed time or evidence. Operation events carry their own effect/target, including late results from an earlier operation on that lane.
 
 Use `progress.progress(subtask, evidenceId)` only for a new reliable finding/evidence/capability, completed mutation or relevant validation. Repeated evidence IDs and unchanged polls do not reset the clock. Use `progress.pause(subtask, true)` for approval waits, suspended/completed work or another announced workstream; resume with `false`. A separate blocked critical lane must remain visible. Managed jobs are paused automatically until reconciliation/completion.
 
@@ -81,6 +87,8 @@ Set `longRunning:true` and supply an explicitly authorized `jobStart` using the 
 Request observation defaults to 30 seconds and is capped at 60 seconds. The injected dispatch must honor its abort signal/timeout; aborting observation does **not** prove cancellation of a side effect. Jobs return their ID immediately. `poll(id)` makes at most one status/output request after 5 seconds, then backs off to 10/20/30 seconds; early polls return the next eligible time without a toolcall. Do other work until that time. A running job is not a completed prerequisite. Terminal unsuccessful exits block dependent actions.
 
 An uncertain start/response locks its effect against replacement starts. Known job IDs remain available for bounded output reconciliation. Missing/unknown IDs or terminal ambiguity never authorize a replacement. When no trustworthy job/result proof exists, resolve side effects outside this adapter with an authorized recovery procedure. There is intentionally no automatic unlock for an uncertain mutation. State is process-local: crash/restart recovery must reconcile externally retained job IDs and side effects before starting a new session. This change does not add a durable idempotency store.
+
+A matching `job_id` with terminal `BLOCKED` is a known `EXPECTED_REVIEW_BLOCKED` failure. It releases the active job slot and pause, clears prior observation ambiguity, retains failure history and leaves dependent children suppressed. An already admitted poll can finalize this result after `close()`; it does not admit any new calls.
 
 ## State, capacity and terminal lifecycle
 
@@ -113,9 +121,13 @@ Closing never clears job identities or ambiguous-intent markers. A late start re
 
 ## Validation and scope
 
+- `tests/agent-orchestration-r2.test.ts`: suppressed batch admission/recovery, member denial continuity across executors and verified changes, overlapping batches, unavailable aggregate results, terminal `BLOCKED` job capacity/close races and event identity on reused lanes. Dispatches use inert fixtures.
+
 - `tests/agent-orchestration.test.ts`: T1–T9, native error classes, known-success audit warnings, changed prerequisites, concurrency, clock pauses/deduplication, timeouts, job reconciliation and batch-member denial retention.
 - `tests/agent-orchestration-mcp.test.ts`: actual MCP initialize/schema/results, independent per-file errors and path-policy preservation, dependency suppression after a real rejected write, diagnostic result shape.
 - `tests/agent-orchestration-lifecycle.test.ts`: 10,000 sequential operations, failure/dependency/ID preservation, large-result release, typed resource limits, >256 evidence items, queue backpressure, terminal close and late mutation/job/poll outcomes. All dispatches in these lifecycle tests are inert fixtures.
 - Existing registry, tool-harvest, audit-result and instruction-size contracts remain relevant. Do not enlarge their budgets just to fit additional prose.
 
 The acceptance claim is **implemented client enforcement for adopted callers plus shared instructions**. It is not global enforcement of the closed hosted `functions.exec` runtime and not a production deployment. Those are explicit adoption/deployment follow-ups, not hidden assumptions. Full/Safe mode, fallback permissions, fresh-context review requirements, Git operations, host process execution and all existing policy checks remain authoritative.
+
+Residual from R2: `host_read_many.continue_on_error` can return raw exception messages, potentially containing paths. This fix does not sanitize or change that existing error contract; no HIGH secret-disclosure claim is established by that observation alone.

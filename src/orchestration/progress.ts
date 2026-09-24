@@ -46,7 +46,8 @@ export class ProgressTracker {
   lane(id: string, intent: string, target: string): boolean {
     if(this.closed)return false;
     const key=digest(id);
-    if (this.lanes.has(key)) return true;
+    const existing=this.lanes.get(key);
+    if(existing) {existing.event.intent=digest(intent);existing.event.target=digest(target);return true;}
     if (!this.capacity("lanes",this.lanes.size,this.limits.lanes)) return false;
     this.lanes.set(key, { elapsed: 0, at: this.now(), paused: false, stage: 0,
       event: {type:"attempt",subtask_id:key,intent:digest(intent),target:digest(target),attempt:0,material_progress:false,blocker:false} });
@@ -71,7 +72,7 @@ export class ProgressTracker {
     this.overflow=0;this.capacitySignals.delete("event_queue:block");this.capacitySignals.delete("event_queue:warning");
     return events;
   }
-  progress(id: string, evidenceId: string): boolean {
+  progress(id: string, evidenceId: string, effect?: Pick<ProgressEvent,"intent"|"target">): boolean {
     if(this.closed)return false;
     const lane = this.lanes.get(digest(id)); if (!lane) return false;
     const fingerprint = digest(JSON.stringify([id,evidenceId]));
@@ -79,7 +80,7 @@ export class ProgressTracker {
     if (!this.capacity("evidence",this.evidence.size,this.limits.evidence)) return false;
     this.evidence.add(fingerprint); lane.last = fingerprint;
     lane.elapsed = 0; lane.at = this.now(); lane.stage = 0;
-    this.event(id, {type:"progress",material_progress:true,blocker:false,error_class:undefined,next_action:undefined});
+    this.event(id, {...effect,type:"progress",material_progress:true,blocker:false,error_class:undefined,next_action:undefined});
     return true;
   }
   pause(id: string, paused: boolean): void {

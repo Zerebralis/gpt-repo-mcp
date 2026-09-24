@@ -6,6 +6,9 @@ export { checkResult, classifyError } from "./orchestration/result.js";
 
 export type ToolCall = { name: string; arguments: Record<string, unknown> };
 export type Change = { kind: "approval" | "argument" | "transport" | "capability"; evidenceId: string };
+export type DiagnosticMember = {tool:string;args:Record<string,unknown>;
+  /** Trusted normalized effect/target, shared with equivalent execute calls. Never sent to the host. */
+  identity?: {intent:string;target:string}};
 export type Operation = {
   id: string; subtask: string; intent: string; target: string; authorization: string;
   call: ToolCall; mutating: boolean; dependsOn?: string[];
@@ -24,6 +27,7 @@ type Job = { id: string; operation: Operation; nextPoll: number; interval: numbe
 const POLICY = new Set<ErrorClass>(["UPSTREAM_AUTO_REVIEW","BACKEND_POLICY","LOCAL_EXEC_POLICY"]);
 const fingerprint = (intent: string,target: string) => hash(JSON.stringify([intent,target]));
 const hash = (v: string) => createHash("sha256").update(v).digest("hex");
+const effect = (op: Pick<Operation,"intent"|"target">) => ({intent:hash(op.intent),target:hash(op.target)});
 
 export const SESSION_LIMITS = {in_flight:64,jobs:32,active_intents:128,history:4096,terminal:100_000,...PROGRESS_LIMITS};
 export type SessionLimits = typeof SESSION_LIMITS;
@@ -90,6 +94,9 @@ export class AgentToolSession {
   }
 
   execute(operation: Operation): Promise<Outcome> {
+    return this.executeOperation(operation);
+  }
+  private executeOperation(operation: Operation, guardedMembers?:()=>Promise<Outcome>): Promise<Outcome> {
     if(this.state!=="active")return Promise.resolve({status:"suppressed",reason:"SESSION_CLOSED"});
     // Copy before asynchronous work: caller mutation must not change the dispatched effect.
     const op = structuredClone(operation);
@@ -105,13 +112,14 @@ export class AgentToolSession {
     if(this.state!=="active")return Promise.resolve({status:"suppressed",reason:"SESSION_CLOSED"});
     this.identities.set(operationKey,identity);
     const missingDependency = op.dependsOn?.some(id=>!this.identities.has(hash(id)));
-    const promise = Promise.resolve().then(() => missingDependency ? this.finish(op,{status:"suppressed",reason:"DEPENDENCY_UNKNOWN"}) : this.run(op))
+    const promise = Promise.resolve().then(() => missingDependency ? this.finish(op,{status:"suppressed",reason:"DEPENDENCY_UNKNOWN"}) :
+      guardedMembers ? guardedMembers().then(outcome=>this.finish(op,outcome)) : this.run(op))
       .finally(()=>{this.pending.delete(operationKey);this.settleClosed();});
     this.pending.set(operationKey,promise);
     return promise.then(value => structuredClone(value));
   }
 
-  private async run(op: Operation): Promise<Outcome> {
+  private async run(op: Operation, diagnosticMember=false): Promise<Outcome> {
     if(this.state!=="active")return this.finish(op,{status:"suppressed",reason:"SESSION_CLOSED"});
     for (const parent of op.dependsOn ?? []) {
       if (parent === op.id || !this.identities.has(hash(parent))) return this.finish(op,{status:"suppressed",reason:"DEPENDENCY_UNKNOWN"});
@@ -158,11 +166,17 @@ export class AgentToolSession {
       }
       if (!this.options.availableTools.has(call.name)) return this.finish(op,{status:"suppressed",reason:"CAPABILITY_UNAVAILABLE"});
       attempt.attempts++; attempt.authorization = op.authorization;
-      this.progress.event(op.subtask,{type:"attempt",attempt:attempt.attempts,material_progress:false,changed_condition:op.change?.kind});
+      this.progress.event(op.subtask,{...effect(op),type:"attempt",attempt:attempt.attempts,material_progress:false,changed_condition:op.change?.kind});
       if(this.state!=="active")return this.finish(op,{status:"suppressed",reason:"SESSION_CLOSED"});
       let checked;
-      try { checked = checkResult(await this.dispatch(call),op.longRunning? ["job_id","status"] : op.requiredFields,op.expectedExitCodes); }
+      try { checked = checkResult(await this.dispatch(call),diagnosticMember?["operations"]:op.longRunning? ["job_id","status"] : op.requiredFields,op.expectedExitCodes); }
       catch (error) { checked = {ok:false,errorClass:classifyError(error),retryable:classifyError(error)==="TRANSPORT",value:undefined}; }
+      if(diagnosticMember) {
+        // The host's singleton batch envelope is not the individual diagnostic's result.
+        const members=checked.value?.operations;
+        if(!Array.isArray(members)||members.length!==1)return this.finish(op,{status:"failed",errorClass:checked.errorClass,reason:"BATCH_RESULT_UNAVAILABLE"});
+        checked=checkResult(record(members[0]),op.requiredFields,op.expectedExitCodes);
+      }
       if (!checked.ok) {
         attempt.failure = checked.errorClass ?? "UNKNOWN"; attempt.retryable = checked.retryable;
         if (POLICY.has(attempt.failure)) attempt.policyBlocks++;
@@ -186,12 +200,12 @@ export class AgentToolSession {
         this.jobs.set(op.id,{id,operation:op,nextPoll:this.now()+5_000,interval:5_000,polling:false});
         attempt.activeJob = true;
         // Starting is not completing the prerequisite, even for fast jobs.
-        this.progress.event(op.subtask,{type:"job",job_status:"running",material_progress:true,blocker:false});
+        this.progress.event(op.subtask,{...effect(op),type:"job",job_status:"running",material_progress:true,blocker:false});
         this.progress.pause(op.subtask,true);
         return this.finish(op,{status:"running",value:checked.value});
       }
       // Explicit evidence required for read progress; unchanged successful polls are not progress.
-      if (op.mutating) this.progress.progress(op.subtask,op.id);
+      if (op.mutating) this.progress.progress(op.subtask,op.id,effect(op));
       return this.finish(op,{status:"succeeded",value:checked.value});
     } finally { attempt.busy = false; if(reservedJob)this.jobReservations--; this.retire(key); }
   }
@@ -208,10 +222,10 @@ export class AgentToolSession {
       try { checked = checkResult(await this.dispatch({name:"host_process_output",arguments:{job_id:job.id}}),["job_id","status"],job.operation.expectedExitCodes); }
       catch (error) { checked = {ok:false,errorClass:classifyError(error),value:undefined}; }
       job.interval = Math.min(30_000,job.interval*2); job.nextPoll = this.now()+job.interval;
-      if (!checked.ok && checked.value?.job_id === job.id && ["exited","failed","killed","timed_out"].includes(String(checked.value.status))) {
+      if (!checked.ok && checked.value?.job_id === job.id && ["exited","failed","killed","timed_out","BLOCKED"].includes(String(checked.value.status))) {
         this.jobs.delete(operationId);
         const attempt = this.attempts.get(fingerprint(job.operation.intent,job.operation.target))!;
-        attempt.activeJob = false; attempt.failure = checked.errorClass ?? "UNKNOWN";
+        attempt.activeJob = false; attempt.ambiguous = false; attempt.failure = checked.errorClass ?? "UNKNOWN";
         this.progress.pause(job.operation.subtask,false);
         this.block(job.operation,attempt,"reconcile");
         return this.finish(job.operation,{status:"failed",errorClass:attempt.failure,value:checked.value});
@@ -230,8 +244,8 @@ export class AgentToolSession {
       const attempt = this.attempts.get(fingerprint(job.operation.intent,job.operation.target))!;
       attempt.ambiguous = false;
       attempt.activeJob = false;
-      this.progress.progress(job.operation.subtask,operationId+":completed");
-      this.progress.event(job.operation.subtask,{type:"job",job_status:"exited",material_progress:true,blocker:false});
+      this.progress.progress(job.operation.subtask,operationId+":completed",effect(job.operation));
+      this.progress.event(job.operation.subtask,{...effect(job.operation),type:"job",job_status:"exited",material_progress:true,blocker:false});
       attempt.failure=undefined;
       this.retire(fingerprint(job.operation.intent,job.operation.target));
       return this.finish(job.operation,{status:"succeeded",value:checked.value});
@@ -258,7 +272,11 @@ export class AgentToolSession {
     for(const key of keys)this.attempts.set(key,{attempts:1,policyBlocks:0,transportRetries:0,authorization:op.authorization,busy:true,ambiguous:false,changes:new Set()});
     try {
       const batch = await this.execute({...op,target:JSON.stringify(files.map(f=>f.path)),call:{name:"host_read_many",arguments:{files,max_total_bytes:total,continue_on_error:true}},mutating:false,requiredFields:["files"]});
-      const outcomes:Outcome[] = !Array.isArray(batch.value?.files) || batch.value.files.length!==files.length ? files.map(()=>({status:"failed",errorClass:batch.errorClass??"UNKNOWN",reason:"INCOMPLETE_BATCH"})) : batch.value.files.map((item:unknown)=>{
+      // Admission did not observe any member result. Preserve the suppression, not a fabricated failure.
+      if(batch.status==="suppressed")return files.map(()=>({...batch}));
+      // No member response means no attributable member failure; the aggregate retains its own history.
+      if(!Array.isArray(batch.value?.files)||batch.value.files.length!==files.length)return files.map(()=>({status:"failed",errorClass:batch.errorClass??"UNKNOWN",reason:"INCOMPLETE_BATCH"}));
+      const outcomes:Outcome[] = batch.value.files.map((item:unknown)=>{
         const r=record(item); const checked=checkResult(r?.ok===false?r:{ok:true,result:r},["content"]);
         return {status:checked.ok?"succeeded":"failed",value:checked.value,errorClass:checked.errorClass};
       });
@@ -270,14 +288,53 @@ export class AgentToolSession {
     } finally { for(const key of keys){this.attempts.get(key)!.busy=false;this.retire(key);} this.helperLeases--;this.settleClosed(); }
   }
 
-  async diagnostics(op: Omit<Operation,"call"|"mutating">, operations: Array<{tool:string;args:Record<string,unknown>}>): Promise<Outcome[]> {
+  async diagnostics(op: Omit<Operation,"call"|"mutating">, operations: DiagnosticMember[]): Promise<Outcome[]> {
     if(this.state!=="active")return [{status:"suppressed",reason:"SESSION_CLOSED"}];
     op=structuredClone(op);operations=structuredClone(operations);
     const allowed = new Set(["system_info","system_processes","system_process_detail","system_process_tree","network_listeners","port_owner","task_list","task_get","eventlog_query","http_probe","stat","file_hash"]);
     if (op.dependsOn?.length || !operations.length || operations.length>16 || operations.some(x=>!allowed.has(x.tool))) return [{status:"suppressed",reason:"UNSUPPORTED_DIAGNOSTIC_BATCH"}];
-    const batch = await this.execute({...op,call:{name:"host_diagnostics_batch",arguments:{operations}},mutating:false,requiredFields:["operations"]});
-    if (!Array.isArray(batch.value?.operations) || batch.value.operations.length!==operations.length) return operations.map(()=>({status:"failed",reason:"INCOMPLETE_BATCH"}));
-    return batch.value.operations.map((item:unknown)=>{const r=record(item);const c=checkResult(r);return {status:c.ok?"succeeded":"failed",value:c.value,errorClass:c.errorClass};});
+    const wire=operations.map(({tool,args})=>({tool,args}));
+    // Supported diagnostic arguments are flat scalar records. Sort keys so property order cannot reset history.
+    const members=operations.map((x,i)=>({...op,id:op.id+":"+i,
+      intent:x.identity?.intent??op.intent,target:x.identity?.target??JSON.stringify([x.tool,Object.fromEntries(Object.entries(x.args).sort(([a],[b])=>a.localeCompare(b)))]),
+      call:{name:"host_diagnostics_batch",arguments:{operations:[wire[i]]}},mutating:false}));
+    const keys=members.map(m=>fingerprint(m.intent,m.target));
+    const aggregate:Operation={...op,intent:JSON.stringify(["diagnostics_batch",op.intent]),target:JSON.stringify([keys,op.requiredFields??[]]),call:{name:"host_diagnostics_batch",arguments:{operations:wire}},mutating:false,requiredFields:["operations"]};
+    if(new Set(keys).size!==keys.length||keys.some(key=>this.attempts.has(key))) {
+      // Reuse the single-operation ledger, verifier, caps and busy guard; decode only the singleton member.
+      // The parent still owns an immutable ID, an in-flight lease and a compact dependency receipt.
+      const batch=await this.executeOperation(aggregate,async()=>{
+        const outcomes:Outcome[]=[];
+        // Sequential member dispatches share the parent's observer lease and receipt. Dependencies await the whole parent promise.
+        for(const member of members)outcomes.push(await this.run({...member,id:op.id},true));
+        return {...(outcomes.find(x=>x.status!=="succeeded")??{status:"succeeded"}),value:{member_outcomes:outcomes}};
+      });
+      return Array.isArray(batch.value?.member_outcomes)?batch.value.member_outcomes as Outcome[]:members.map(()=>({...batch}));
+    }
+    const denied=this.capacity("active_intents",[...this.attempts.values()].filter(a=>a.busy||a.activeJob).length,keys.length+1)??this.capacity("history",this.attempts.size,keys.length+1);
+    if(denied)return members.map(()=>({...denied}));
+    if(this.state!=="active")return members.map(()=>({status:"suppressed",reason:"SESSION_CLOSED"}));
+    this.helperLeases++;
+    for(const key of keys)this.attempts.set(key,{attempts:1,policyBlocks:0,transportRetries:0,authorization:op.authorization,busy:true,ambiguous:false,changes:new Set()});
+    try {
+      const batch=await this.executeOperation(aggregate,async()=>{
+        const result=await this.run(aggregate);
+        if(result.status==="suppressed")return result;
+        if(!Array.isArray(result.value?.operations)||result.value.operations.length!==members.length)return {status:"failed",errorClass:result.errorClass,reason:"BATCH_RESULT_UNAVAILABLE"};
+        const outcomes:Outcome[]=result.value.operations.map((item:unknown,i)=>{
+          const c=checkResult(record(item),op.requiredFields,op.expectedExitCodes);
+          if(!c.ok) {
+            const attempt=this.attempts.get(keys[i])!;
+            attempt.failure=c.errorClass??"UNKNOWN";attempt.retryable=c.retryable;
+            if(POLICY.has(attempt.failure))attempt.policyBlocks++;
+          }
+          return {status:c.ok?"succeeded":"failed",value:c.value,errorClass:c.errorClass};
+        });
+        // Validate members before the parent observer settles, so dependents cannot consume an intermediate success.
+        return {...(outcomes.find(x=>x.status!=="succeeded")??result),value:{member_outcomes:outcomes}};
+      });
+      return Array.isArray(batch.value?.member_outcomes)?batch.value.member_outcomes as Outcome[]:members.map(()=>({...batch}));
+    } finally {for(const key of keys){this.attempts.get(key)!.busy=false;this.retire(key);}this.helperLeases--;this.settleClosed();}
   }
 
   private async dispatch(call: ToolCall): Promise<unknown> {
@@ -296,7 +353,7 @@ export class AgentToolSession {
     const key = hash(JSON.stringify([op.subtask,op.intent,op.target,attempt.failure,attempt.policyBlocks,next]));
     if (this.reported.has(key)) return;
     this.reported.add(key);
-    this.progress.event(op.subtask,{type:"blocker",blocker:true,error_class:attempt.failure??"UNKNOWN",attempt:attempt.attempts,
+    this.progress.event(op.subtask,{...effect(op),type:"blocker",blocker:true,error_class:attempt.failure??"UNKNOWN",attempt:attempt.attempts,
       material_progress:false,next_action:next,changed_condition:op.change?.kind??"missing"});
   }
   private finish(op: Operation,value: Outcome): Outcome {
