@@ -174,7 +174,14 @@ export class AgentToolSession {
       if(diagnosticMember) {
         // The host's singleton batch envelope is not the individual diagnostic's result.
         const members=checked.value?.operations;
-        if(!Array.isArray(members)||members.length!==1)return this.finish(op,{status:"failed",errorClass:checked.errorClass,reason:"BATCH_RESULT_UNAVAILABLE"});
+        if(!Array.isArray(members)||members.length!==1) {
+          // Retry admission above counts transport retries. A lost singleton response is an observer failure, not a member denial.
+          if(!checked.ok && checked.errorClass==="TRANSPORT") {
+            attempt.failure="TRANSPORT";attempt.retryable=checked.retryable;
+            this.block(op,attempt,"resolve_prerequisite");
+          }
+          return this.finish(op,{status:"failed",errorClass:checked.errorClass,reason:"BATCH_RESULT_UNAVAILABLE"});
+        }
         checked=checkResult(record(members[0]),op.requiredFields,op.expectedExitCodes);
       }
       if (!checked.ok) {

@@ -70,6 +70,8 @@ Diagnostic members accept a caller-only `identity: {intent, target}`. Supply the
 
 Suppressed batch admission propagates the actual reason and releases member reservations without creating failures. Missing member results after an aggregate failure are reported as unavailable/incomplete; only the aggregate retains its attributable failure history. No individual denial is inferred from a lost aggregate response. A caller may retry an individual read-only diagnostic through its normal guarded contract; the adapter does not claim which members the host executed when their results are missing.
 
+For a guarded diagnostic singleton, a known aggregate transport failure is retained as `TRANSPORT` in that singleton's attempt ledger, with the reported retryability and the existing two-retry ceiling. This records loss of observation, not a member policy denial or proof of execution. Without a known transport failure, an incomplete aggregate does not replace prior member history with a guessed failure.
+
 ### PROGRESS_STALL_REPORTING
 
 Each lane represents a logical subtask. The adapter immediately emits a blocker event on a returned hard failure. Events contain pseudonymized subtask/effect/target IDs, attempt count, error class, progress/blocker state, last successful evidence ID, changed/missing condition and next-action category. They contain no command, argument, approval text or response body. The host UI maps identifiers to approved human-readable labels and reports operational facts, never internal reasoning.
