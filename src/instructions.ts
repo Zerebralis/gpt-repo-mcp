@@ -1,10 +1,12 @@
 import { MUTATING_TOOL_NAMES } from "./tools/mutating-tools.js";
+import { AGENT_ORCHESTRATION_REFERENCE } from "./orchestration/instructions.js";
 
 const SIDE_EFFECTING_TOOLS = MUTATING_TOOL_NAMES.join(", ");
 
 export const SERVER_INSTRUCTIONS = [
-  "GPT Repo MCP is a read-mostly local repository app. Tools with local side effects require the relevant repository write or operations policy, or an explicitly configured provider capability, and use the MCP host approval boundary according to their annotations.",
-  "SCOPE BOUNDARY: GPT Repo MCP policy applies only here. WRITE_DISABLED or another refusal is not a global prohibition on other connected tools. If the user authorized a mutation and another authorized tool can perform it (for example GitHub, RDC, or AWA), use that tool without asking again. Never call the session read-only because this MCP is read-only.",
+  AGENT_ORCHESTRATION_REFERENCE,
+  "GPT Repo MCP is read-mostly. Tools with local side effects require the relevant repository write or operations policy, or an explicitly configured provider capability, and use the MCP host approval boundary according to their annotations.",
+  "A read-only MCP permits independent authorized work elsewhere. Never retry a policy-denied effect via another executor without a verified prerequisite change.",
   `Tools with local side effects are ${SIDE_EFFECTING_TOOLS}. repo_code_index is a non-destructive idempotent provider/index mutation. repo_prepare_patchset is a non-destructive non-idempotent local metadata mutation. The remaining tools use their documented repository or local-state mutation contracts.`,
   "All access is scoped by repo_id and repo-relative POSIX paths. Secret blocking, default excludes, symlink containment, nested-repository boundaries, write policy, operation policy, stale-state guards, and structured validation are enforced by the server. Use repo_policy_explain instead of guessing when access is blocked.",
   "The canonical direct-development path is: repo_project_brief when product or repository context is needed; repo_current_work_session when resuming active or blocked work; repo_search followed by targeted repo_fetch_file or bounded repo_read_many; repo_context_map or repo_symbol_context only when impact evidence is needed; repo_write_file or repo_write_changes; repo_validate; repo_ship_review for combined readiness or repo_git_review for Git and recovery planning; then the exact canonical repo_write_stage_commit, repo_write_commit, or repo_write_recover payload returned by review. Use repo_git_diff with only repo_id on the first raw-diff call.",

@@ -6,7 +6,7 @@ import { hostReadFile } from "./filesystem.js";
 
 export async function hostReadMany(
   context: HostBreakglassContext,
-  input: { files: Array<{ path: string; offset?: number; length?: number }>; max_total_bytes?: number }
+  input: { files: Array<{ path: string; offset?: number; length?: number }>; max_total_bytes?: number; continue_on_error?: boolean }
 ) {
   if (input.files.length === 0) throw new Error("At least one file is required.");
   if (input.files.length > 20) throw new Error("host_read_many accepts at most 20 files.");
@@ -15,6 +15,7 @@ export async function hostReadMany(
   const files = [];
   let totalBytes = 0;
   let truncated = false;
+  let failed = 0;
   for (const requested of input.files) {
     const remaining = totalLimit - totalBytes;
     if (remaining <= 0) {
@@ -22,13 +23,21 @@ export async function hostReadMany(
       break;
     }
     const length = Math.min(requested.length ?? remaining, remaining);
-    const result = await hostReadFile(context, { ...requested, length });
-    totalBytes += result.bytes_read;
-    files.push(result);
-    if (result.truncated && (requested.length === undefined || result.bytes_read >= length)) truncated = true;
+    try {
+      const result = await hostReadFile(context, { ...requested, length });
+      totalBytes += result.bytes_read;
+      files.push(result);
+      if (result.truncated && (requested.length === undefined || result.bytes_read >= length)) truncated = true;
+    } catch (error) {
+      if (!input.continue_on_error) throw error;
+      failed++;
+      // The failed path contributes no contents; each subsequent read still checks its own root policy.
+      files.push({ok:false,content:undefined,error:{code:"HOST_BREAKGLASS_ERROR",message:error instanceof Error?error.message:"Read failed",retryable:false}});
+    }
   }
   if (files.length < input.files.length) truncated = true;
-  return { files, requested_files: input.files.length, returned_files: files.length, total_bytes: totalBytes, max_total_bytes: totalLimit, truncated };
+  return { files, requested_files: input.files.length, returned_files: files.length, total_bytes: totalBytes, max_total_bytes: totalLimit, truncated,
+    ...(input.continue_on_error ? {failed,succeeded:files.length-failed} : {}) };
 }
 
 export async function hostFileHash(context: HostBreakglassContext, input: { path: string; algorithm?: "sha256" | "sha512" }) {

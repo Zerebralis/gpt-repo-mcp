@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { AgentToolSession } from "../dist/agent-orchestration.js";
 
 const root = await mkdtemp(join(tmpdir(), "gpt-host-breakglass-smoke-"));
 const outside = await mkdtemp(join(tmpdir(), "gpt-host-breakglass-outside-"));
@@ -18,6 +19,7 @@ const port = await freePort();
 let child;
 let client;
 let victim;
+let orchestration;
 
 try {
   await writeFile(configPath, JSON.stringify({
@@ -56,6 +58,11 @@ try {
 
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
+  orchestration = new AgentToolSession({
+    availableTools: new Set(names),
+    dispatch: (request, { signal, timeoutMs }) => client.callTool(request, undefined, { signal, timeout: timeoutMs }),
+    onEvent: () => {} // Smoke checks results directly; no interactive user surface.
+  });
   assert(names.length === 42, `expected 42 tools, got ${names.length}: ${names.join(", ")}`);
   for (const required of ["host_connection_snapshot", "host_read_file", "host_read_many", "host_file_hash", "host_write_file", "host_edit_file", "host_apply_changes", "host_shell", "host_process_start", "host_process_input", "host_review_runtime", "host_git", "host_system_info", "host_system_process_detail", "host_network_listeners", "host_port_owner", "host_task_list", "host_eventlog_query", "host_http_probe", "host_http_request", "host_diagnostics_batch", "host_window_observe", "host_computer_use_catalog", "host_computer_use_call"]) {
     assert(names.includes(required), `missing tool ${required}`);
@@ -120,22 +127,30 @@ try {
   const guarded = await call("host_shell", { cwd: root, command: guardedCommand, timeout_ms: 2_000 });
   assert(guarded.isError === true, "safe policy did not reject guarded command");
 
-  const started = expectOk(await call("host_process_start", {
+  const jobStartArgs = {
     executable: process.execPath,
     args: ["-e", "setTimeout(() => { process.stdout.write('JOB_OK'); }, 100)"],
     cwd: root,
     timeout_ms: 5_000
-  }));
-  const jobId = started.result.job_id;
+  };
+  const started = await orchestration.execute({
+    id: "smoke-job", subtask: "smoke-job", intent: "run-fixture", target: root,
+    authorization: "isolated-fixture", mutating: true, longRunning: true,
+    call: { name: "host_process_start", arguments: jobStartArgs },
+    jobStart: { name: "host_process_start", arguments: jobStartArgs }
+  });
+  assert(started.status === "running", "job start prerequisite failed");
+  const jobId = started.value.job_id;
   const reconciledStarted = expectOk(await call("host_process_list", { job_id: jobId })).result;
   assert(reconciledStarted.found === true && reconciledStarted.job?.job_id === jobId, "host_process_list did not reconcile the exact managed job");
   const unknownManaged = expectOk(await call("host_process_list", { job_id: "00000000-0000-4000-8000-000000000001" })).result;
   assert(unknownManaged.found === false && unknownManaged.manager_state === "unknown", "host_process_list did not keep unknown job identity separate");
   let job;
-  for (let i = 0; i < 40; i += 1) {
-    job = expectOk(await call("host_process_output", { job_id: jobId })).result;
-    if (job.status !== "running") break;
-    await delay(50);
+  for (let i = 0; i < 4; i += 1) {
+    await delay(5_000);
+    const outcome = await orchestration.poll("smoke-job");
+    if (outcome.status === "succeeded") { job = outcome.value; break; }
+    assert(outcome.status === "running", "job output failed; do not restart mutation");
   }
   assert(job?.stdout_tail.includes("JOB_OK"), `managed job missing JOB_OK: ${JSON.stringify(job)}`);
 
@@ -217,6 +232,7 @@ try {
     return client.callTool({ name, arguments: args });
   }
 } finally {
+  orchestration?.close();
   if (victim && victim.exitCode === null && victim.signalCode === null) victim.kill("SIGKILL");
   if (process.platform === "win32") spawnSync("reg.exe", ["delete", "HKCU\\Environment", "/v", registryValue, "/f"], { stdio: "ignore", windowsHide: true });
   if (client) await client.close().catch(() => undefined);

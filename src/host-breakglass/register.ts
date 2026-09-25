@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { HostBreakglassContext } from "./context.js";
 import { registerHostBreakglassTools } from "./tools.js";
+import { AGENT_ORCHESTRATION_INSTRUCTIONS } from "../orchestration/instructions.js";
 
 export function createHostBreakglassMcpServer(context: HostBreakglassContext): McpServer {
   const server = new McpServer(
@@ -8,6 +9,7 @@ export function createHostBreakglassMcpServer(context: HostBreakglassContext): M
     {
       capabilities: { tools: {} },
       instructions: [
+        AGENT_ORCHESTRATION_INSTRUCTIONS,
         "Independent host breakglass control plane for operator-approved recovery work.",
         "Use absolute paths and stay within configured roots unless full_host_access is deliberately enabled.",
         "Prefer bounded file/Git/process tools over host_shell when they can perform the task.",
